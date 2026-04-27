@@ -5,6 +5,7 @@
 
 import { useState, FC, useEffect, useRef } from 'react';
 import { motion, AnimatePresence, useAnimation } from 'motion/react';
+import { Analytics } from '@vercel/analytics/react';
 import { useGameEngine } from './hooks/useGameEngine';
 import { Hero, Monster, GAME_CONSTANTS, BossAbility } from './types';
 import { 
@@ -241,7 +242,7 @@ export default function App() {
         <div className="min-h-screen bg-slate-950 text-slate-100 font-sans flex flex-col items-center justify-center p-6 text-center overflow-hidden relative">
           <div className="absolute inset-0 bg-red-950/20 pointer-events-none" />
           <h1 className="text-6xl font-black text-red-500 mb-4 animate-bounce">GAME OVER</h1>
-          <p className="text-xl text-slate-400 mb-8 font-medium">城堡防线已被冲破...</p>
+          <p className="text-xl text-slate-400 mb-8 font-medium">���堡防线已被冲破...</p>
           
           <div className="bg-slate-900/80 p-6 rounded-2xl border border-red-900/50 mb-8 min-w-[280px]">
             <div className="text-sm text-slate-500 font-bold mb-2 uppercase tracking-widest">最终成绩</div>
@@ -570,6 +571,7 @@ export default function App() {
         )}
       </AnimatePresence>
       {renderContent()}
+      <Analytics />
     </>
   );
 }
