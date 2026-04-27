@@ -121,7 +121,27 @@ export default function App() {
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
   const [damageNumbers, setDamageNumbers] = useState<{ id: number, value: number, isCritical?: boolean }[]>([]);
   const prevMonsterHp = useRef(state.currentMonster?.hp || 0);
-  const [showWarningModal, setShowWarningModal] = useState(true);
+
+  // Anti-clicker Auto-merge mechanism
+  useEffect(() => {
+    if (isPaused || currentView !== 'game') return;
+
+    const interval = setInterval(() => {
+      const grid = state.grid;
+      for (let i = 0; i < grid.length; i++) {
+        for (let j = i + 1; j < grid.length; j++) {
+          const h1 = grid[i];
+          const h2 = grid[j];
+          if (h1 && h2 && h1.level === h2.level) {
+            mergeHeroes(i, j);
+            return; 
+          }
+        }
+      }
+    }, 1500);
+
+    return () => clearInterval(interval);
+  }, [state.grid, isPaused, currentView, mergeHeroes]);
 
   // Trigger damage number when monster HP changes
   useEffect(() => {
@@ -540,35 +560,6 @@ export default function App() {
 
   return (
     <>
-      <AnimatePresence>
-        {showWarningModal && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
-          >
-            <motion.div 
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.9, y: 20 }}
-              className="bg-slate-900 border border-slate-700/50 p-6 sm:p-8 rounded-3xl shadow-2xl max-w-sm w-full text-center flex flex-col items-center gap-6 relative"
-            >
-              <div className="text-6xl mb-2">⚠️</div>
-              <h2 className="text-2xl sm:text-3xl font-black text-rose-500 uppercase tracking-widest">警告</h2>
-              <p className="text-lg sm:text-xl text-slate-200 font-bold">
-                开连点器死吗
-              </p>
-              <button 
-                onClick={() => setShowWarningModal(false)}
-                className="mt-4 w-full py-3 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl transition-colors active:scale-95"
-              >
-                好的，知道了
-              </button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
       {renderContent()}
     </>
   );
