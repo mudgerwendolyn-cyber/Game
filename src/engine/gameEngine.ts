@@ -83,17 +83,28 @@ export const getAngle = (v1: Vector, v2: Vector) => {
   return Math.atan2(v2.y - v1.y, v2.x - v1.x);
 };
 
-export const updatePlayer = (player: Player, keys: Set<string>) => {
+export const updatePlayer = (player: Player, keys: Set<string>, joystickVector?: Vector) => {
   const move = { x: 0, y: 0 };
-  if (keys.has('w') || keys.has('ArrowUp')) move.y -= 1;
-  if (keys.has('s') || keys.has('ArrowDown')) move.y += 1;
-  if (keys.has('a') || keys.has('ArrowLeft')) move.x -= 1;
-  if (keys.has('d') || keys.has('ArrowRight')) move.x += 1;
+
+  if (joystickVector && (joystickVector.x !== 0 || joystickVector.y !== 0)) {
+    move.x = joystickVector.x;
+    move.y = joystickVector.y;
+  } else {
+    if (keys.has('w') || keys.has('ArrowUp')) move.y -= 1;
+    if (keys.has('s') || keys.has('ArrowDown')) move.y += 1;
+    if (keys.has('a') || keys.has('ArrowLeft')) move.x -= 1;
+    if (keys.has('d') || keys.has('ArrowRight')) move.x += 1;
+  }
 
   if (move.x !== 0 || move.y !== 0) {
-    const length = Math.sqrt(move.x * move.x + move.y * move.y);
-    player.pos.x += (move.x / length) * player.speed;
-    player.pos.y += (move.y / length) * player.speed;
+    if (!joystickVector || (joystickVector.x === 0 && joystickVector.y === 0)) {
+      const length = Math.sqrt(move.x * move.x + move.y * move.y);
+      player.pos.x += (move.x / length) * player.speed;
+      player.pos.y += (move.y / length) * player.speed;
+    } else {
+      player.pos.x += move.x * player.speed;
+      player.pos.y += move.y * player.speed;
+    }
   }
 
   // Bounds

@@ -30,6 +30,7 @@ import {
   GAME_WIDTH, 
   GAME_HEIGHT, 
   INITIAL_PLAYER_STATS, 
+  STAT_CAPS,
   WEAPON_TYPES 
 } from './constants';
 import { 
@@ -115,29 +116,42 @@ const UPGRADES: Upgrade[] = [
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [gameState, setGameState] = useState<GameState>(INITIAL_STATE);
   const [shake, setShake] = useState(0);
+  const [joystick, setJoystick] = useState<Vector>({ x: 0, y: 0 });
+  const [isMobile, setIsMobile] = useState(false);
   const keysRef = useRef<Set<string>>(new Set());
   const requestRef = useRef<number>();
   const lastTimeRef = useRef<number>(0);
+  const gameStateRef = useRef<GameState>(INITIAL_STATE);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile('ontouchstart' in window || navigator.maxTouchPoints > 0);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   const resetGame = () => {
     const player = createPlayer();
-    setGameState({ ...INITIAL_STATE, player });
+    gameStateRef.current = { ...INITIAL_STATE, player };
+    setGameState(gameStateRef.current);
     lastTimeRef.current = 0;
   };
 
   const startGame = () => {
     const player = createPlayer();
-    setGameState({ ...INITIAL_STATE, player, status: GameStatus.PLAYING });
+    gameStateRef.current = { ...INITIAL_STATE, player, status: GameStatus.PLAYING };
+    setGameState(gameStateRef.current);
+    lastTimeRef.current = 0;
   };
 
   const pickUpgrades = () => {
     const picks: Upgrade[] = [];
     const pool = [...UPGRADES];
-    
-    // We can implement weights by duplicating items or using a weighted random
-    // For now, let's just pick 3 unique ones
     while (picks.length < 3 && pool.length > 0) {
         const idx = Math.floor(Math.random() * pool.length);
         picks.push(pool.splice(idx, 1)[0]);
@@ -146,49 +160,44 @@ export default function App() {
   };
 
   const handleUpgrade = (upgrade: Upgrade) => {
-    setGameState(prev => {
-        const next = { ...prev };
-        upgrade.apply(next.player, next.weapons);
-        next.status = GameStatus.PLAYING;
-        next.gameTime = performance.now(); // Sync timer
-        lastTimeRef.current = performance.now();
-        return next;
-    });
+    upgrade.apply(gameStateRef.current.player, gameStateRef.current.weapons);
+    gameStateRef.current.status = GameStatus.PLAYING;
+    lastTimeRef.current = performance.now();
+    setGameState({ ...gameStateRef.current });
   };
 
   const update = useCallback((time: number) => {
     if (lastTimeRef.current === 0) lastTimeRef.current = time;
-    const deltaTime = Math.min(time - lastTimeRef.current, 50); // Cap deltaTime to prevent huge jumps
+    const deltaTime = Math.min(time - lastTimeRef.current, 50);
     lastTimeRef.current = time;
 
-    setGameState(prev => {
-      if (prev.status !== GameStatus.PLAYING) return prev;
-
-      const next = { ...prev };
-      next.gameTime += deltaTime;
-      const { player, enemies, projectiles, xpGems, weapons, damageNumbers } = next;
+    const state = gameStateRef.current;
+    if (state.status === GameStatus.PLAYING) {
+      state.gameTime += deltaTime;
+      const { player, enemies, projectiles, xpGems, weapons, damageNumbers } = state;
 
       // 1. Player Update
-      updatePlayer(player, keysRef.current);
+      updatePlayer(player, keysRef.current, joystick);
 
       // 2. Enemy Spawning - frequency increases with time
       const baseRate = 1000;
-      const spawnRate = Math.max(100, baseRate / (1 + (next.gameTime / 60000) * 0.5));
+      const spawnRate = Math.max(100, baseRate / (1 + (state.gameTime / 60000) * 0.5));
       if (Math.random() < (deltaTime / spawnRate)) {
-        next.enemies.push(spawnEnemy(next.gameTime, player.pos));
+        state.enemies.push(spawnEnemy(state.gameTime, player.pos));
       }
 
       // Wave tracking
-      next.wave = Math.floor(next.gameTime / 30000) + 1;
+      state.wave = Math.floor(state.gameTime / 30000) + 1;
 
       // 3. Enemy Update
-      updateEnemies(next);
-      if (next.player.hp < player.hp) {
+      const oldHp = player.hp;
+      updateEnemies(state);
+      if (player.hp < oldHp) {
           setShake(10);
       }
 
       // 4. Combat / AutoFire
-      autoFire(next);
+      autoFire(state);
 
       // 5. Projectiles Update
       for (let i = projectiles.length - 1; i >= 0; i--) {
@@ -198,8 +207,6 @@ export default function App() {
         p.distanceTraveled += Math.sqrt(p.velocity.x ** 2 + p.velocity.y ** 2);
 
         let pRemoved = false;
-        const hitEnemiesSet = new Set<string>(); // Prevent hitting same target multiple times with same bullet
-
         for (let j = enemies.length - 1; j >= 0; j--) {
           const e = enemies[j];
           if (getDistance(p.pos, e.pos) < p.radius + e.radius) {
@@ -214,7 +221,7 @@ export default function App() {
             e.pos.y += Math.sin(angle) * kbForce;
 
             // Damage Number
-            next.damageNumbers.push({
+            state.damageNumbers.push({
                 id: Math.random(),
                 pos: { x: e.pos.x, y: e.pos.y - 20 },
                 value: Math.floor(dmg),
@@ -228,9 +235,9 @@ export default function App() {
             }
 
             if (e.hp <= 0) {
-              next.score += e.isElite ? 500 : 100;
+              state.score += e.isElite ? 500 : 100;
               player.killCount += 1;
-              next.xpGems.push({ 
+              state.xpGems.push({ 
                   id: Math.random().toString(), 
                   pos: { ...e.pos }, 
                   radius: e.isElite ? 8 : 4, 
@@ -255,14 +262,15 @@ export default function App() {
       }
 
       // 6. XP Gems
-      const xpCollectionRadius = 100 * (1 + player.level * 0.05); // Radius grows slightly
+      const xpCollectionRadius = 100 * (1 + player.level * 0.05);
       for (let i = xpGems.length - 1; i >= 0; i--) {
         const gem = xpGems[i];
         const dist = getDistance(player.pos, gem.pos);
         if (dist < xpCollectionRadius) { 
             const angle = Math.atan2(player.pos.y - gem.pos.y, player.pos.x - gem.pos.x);
-            gem.pos.x += Math.cos(angle) * player.speed * 1.5;
-            gem.pos.y += Math.sin(angle) * player.speed * 1.5;
+            const pullSpeed = player.speed * 1.5;
+            gem.pos.x += Math.cos(angle) * pullSpeed;
+            gem.pos.y += Math.sin(angle) * pullSpeed;
         }
         if (dist < player.radius + gem.radius) {
             player.xp += gem.value;
@@ -272,8 +280,8 @@ export default function App() {
                 player.xp -= player.maxXp;
                 player.level += 1;
                 player.maxXp = Math.floor(player.maxXp * 1.15) + 30;
-                next.status = GameStatus.UPGRADING;
-                next.nextUpgrades = pickUpgrades();
+                state.status = GameStatus.UPGRADING;
+                state.nextUpgrades = pickUpgrades();
             }
         }
       }
@@ -283,23 +291,29 @@ export default function App() {
           const dn = damageNumbers[i];
           dn.pos.y -= 0.5;
           dn.life -= 0.02;
-          if (dn.life <= 0) damageNumbers.splice(i, 1);
+          if (dn.life <= 0) state.damageNumbers.splice(i, 1);
       }
 
       // 8. Game Over check
       if (player.hp <= 0) {
-        next.status = GameStatus.GAME_OVER;
+        state.status = GameStatus.GAME_OVER;
       }
 
-      return next;
-    });
+      // Periodically sync to React state for UI (low frequency is fine)
+      if (Math.floor(time / 100) !== Math.floor((time - deltaTime) / 100) || state.status !== GameStatus.PLAYING) {
+          setGameState({ ...state });
+      }
+    }
 
-    setShake(prev => Math.max(0, prev - 0.5));
+    // Render always with latest ref state
     const ctx = canvasRef.current?.getContext('2d');
-    if (ctx) drawGame(ctx, gameState, shake);
+    if (ctx) {
+      setShake(prev => Math.max(0, prev - 0.5));
+      drawGame(ctx, state, shake);
+    }
     
     requestRef.current = requestAnimationFrame(update);
-  }, [gameState, shake]);
+  }, [joystick, shake]);
 
   useEffect(() => {
     requestRef.current = requestAnimationFrame(update);
@@ -311,105 +325,173 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => keysRef.current.add(e.key.toLowerCase());
     const handleKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.key.toLowerCase());
+    const preventDefault = (e: TouchEvent) => {
+      if (gameState.status === GameStatus.PLAYING) e.preventDefault();
+    };
+
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    // Prevent scrolling when playing on mobile
+    window.addEventListener('touchmove', preventDefault, { passive: false });
+    
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('touchmove', preventDefault);
     };
-  }, []);
+  }, [gameState.status]);
+
+  const handleJoystick = (pos: Vector | null) => {
+    if (!pos) {
+      setJoystick({ x: 0, y: 0 });
+    } else {
+      const mag = Math.sqrt(pos.x * pos.x + pos.y * pos.y);
+      const limit = 64; // Distance from center
+      if (mag > 0) {
+        const normalizedMag = Math.min(mag, limit) / limit;
+        setJoystick({
+          x: (pos.x / mag) * normalizedMag,
+          y: (pos.y / mag) * normalizedMag
+        });
+      }
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-[#0f172a] text-slate-100 font-sans selection:bg-blue-500/30 overflow-hidden flex flex-col items-center justify-center">
+    <div className="min-h-screen bg-[#020617] text-slate-100 font-sans selection:bg-blue-500/30 overflow-hidden flex items-center justify-center">
       
       {/* UI Overlay */}
-      <div className="relative w-[800px] h-[600px] overflow-hidden shadow-2xl border-4 border-slate-800 rounded-xl bg-slate-900">
+      <div 
+        ref={containerRef}
+        className="relative w-full h-full md:w-[450px] md:h-[800px] md:aspect-[9/16] overflow-hidden shadow-2xl md:border-4 md:border-slate-800 md:rounded-[3rem] bg-slate-900"
+      >
         <canvas 
           ref={canvasRef} 
           width={GAME_WIDTH} 
           height={GAME_HEIGHT}
-          className="w-full h-full block"
+          className="w-full h-full block touch-none"
         />
 
-        {/* HUD */}
-        {gameState.status !== GameStatus.MENU && (
-          <div className="absolute top-0 left-0 w-full p-4 pointer-events-none flex flex-col gap-2">
-            <div className="flex justify-between items-center bg-slate-900/60 backdrop-blur-md p-2 rounded-xl border border-slate-700/50">
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2">
-                  <Heart className="text-rose-500 fill-rose-500/20" size={20} />
-                  <div className="w-32 h-4 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
-                    <div 
-                      className="h-full bg-gradient-to-r from-rose-500 to-rose-600 transition-all duration-300"
-                      style={{ width: `${(gameState.player.hp / gameState.player.maxHp) * 100}%` }}
-                    />
-                  </div>
-                  <span className="text-xs font-bold tabular-nums">{Math.floor(gameState.player.hp)}/{gameState.player.maxHp}</span>
-                </div>
+        {/* Mobile Joystick Area - Full bottom half for better touch response */}
+        {gameState.status === GameStatus.PLAYING && (
+          <div className="absolute inset-x-0 bottom-0 top-1/2 z-50 pointer-events-none md:pointer-events-auto">
+             <div 
+               className="absolute bottom-16 left-1/2 -translate-x-1/2 w-32 h-32 bg-white/5 backdrop-blur-sm rounded-full border border-white/10 flex items-center justify-center touch-none pointer-events-auto shadow-inner"
+               onTouchStart={(e) => {
+                 const touch = e.touches[0];
+                 const rect = e.currentTarget.getBoundingClientRect();
+                 const x = touch.clientX - (rect.left + rect.width / 2);
+                 const y = touch.clientY - (rect.top + rect.height / 2);
+                 handleJoystick({ x, y });
+               }}
+               onTouchMove={(e) => {
+                 const touch = e.touches[0];
+                 const rect = e.currentTarget.getBoundingClientRect();
+                 const x = touch.clientX - (rect.left + rect.width / 2);
+                 const y = touch.clientY - (rect.top + rect.height / 2);
+                 handleJoystick({ x, y });
+               }}
+               onTouchEnd={() => handleJoystick(null)}
+             >
+                <motion.div 
+                  className="w-14 h-14 bg-gradient-to-br from-blue-400 to-blue-600 rounded-full shadow-2xl shadow-blue-500/50 border-2 border-white/20"
+                  animate={{ 
+                    x: joystick.x * 45, 
+                    y: joystick.y * 45 
+                  }}
+                  transition={{ type: 'spring', damping: 12, stiffness: 150 }}
+                />
                 
-                <div className="flex items-center gap-2">
-                  <Star className="text-purple-400 fill-purple-400/20" size={20} />
-                  <div className="w-48 h-2 bg-slate-800 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-gradient-to-r from-purple-400 to-indigo-500 transition-all duration-300"
-                      style={{ width: `${(gameState.player.xp / gameState.player.maxXp) * 100}%` }}
-                    />
-                  </div>
-                  <span className="text-[10px] font-black uppercase text-purple-300">等级 {gameState.player.level}</span>
-                </div>
-              </div>
+                {/* Visual feedback for joystick range */}
+                <div className="absolute inset-0 rounded-full border-2 border-blue-500/20 animate-pulse scale-110 pointer-events-none" />
+             </div>
+          </div>
+        )}
 
-              <div className="flex items-center gap-6">
-                <div className="text-right">
-                    <div className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">波次</div>
-                    <div className="text-lg font-black text-blue-400 leading-none">{gameState.wave}</div>
-                </div>
-                <div className="text-right">
-                    <div className="text-[10px] text-slate-500 font-bold uppercase tracking-tighter">时间</div>
-                    <div className="text-lg font-black text-slate-300 leading-none">
+        {/* HUD - Portrait Optimized */}
+        {gameState.status !== GameStatus.MENU && (
+          <div className="absolute top-0 left-0 w-full p-4 pointer-events-none flex flex-col gap-3">
+            {/* Top Bar: Timer & Wave */}
+            <div className="flex justify-between items-center px-4 py-2 bg-slate-950/40 backdrop-blur-md rounded-2xl border border-white/5 shadow-lg">
+                <div className="flex flex-col">
+                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Time</span>
+                    <span className="text-lg font-black text-white tabular-nums">
                         {Math.floor(gameState.gameTime / 60000)}:
                         {String(Math.floor((gameState.gameTime % 60000) / 1000)).padStart(2, '0')}
+                    </span>
+                </div>
+                <div className="flex flex-col items-end">
+                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Wave</span>
+                    <span className="text-xl font-black text-blue-400 italic">#{gameState.wave}</span>
+                </div>
+            </div>
+
+            {/* Stats Bars */}
+            <div className="flex flex-col gap-2">
+                {/* Health */}
+                <div className="relative h-6 bg-slate-950/60 rounded-full border border-white/10 overflow-hidden shadow-inner px-1 flex items-center">
+                    <motion.div 
+                      className="absolute left-0 top-0 h-full bg-gradient-to-r from-rose-500 via-rose-400 to-rose-600"
+                      initial={{ width: '100%' }}
+                      animate={{ width: `${(gameState.player.hp / gameState.player.maxHp) * 100}%` }}
+                      transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
+                    />
+                    <div className="relative z-10 w-full flex justify-between px-2 items-center">
+                        <Heart size={14} className="text-white fill-white/20" />
+                        <span className="text-[10px] font-black text-white drop-shadow-md">
+                            {Math.floor(gameState.player.hp)} / {gameState.player.maxHp}
+                        </span>
                     </div>
                 </div>
-              </div>
+
+                {/* XP */}
+                <div className="relative h-2 bg-slate-950/60 rounded-full border border-white/5 overflow-hidden">
+                    <motion.div 
+                      className="h-full bg-gradient-to-r from-purple-500 to-indigo-500"
+                      animate={{ width: `${(gameState.player.xp / gameState.player.maxXp) * 100}%` }}
+                    />
+                </div>
+                <div className="flex justify-between items-center px-1">
+                    <span className="text-[10px] font-black text-purple-400 uppercase">Lv.{gameState.player.level}</span>
+                    <span className="text-[10px] font-black text-slate-500 uppercase">Score: {gameState.score}</span>
+                </div>
             </div>
           </div>
         )}
 
-        {/* Upgrade Screen */}
+        {/* Upgrade Screen - Portrait Height Optimized */}
         <AnimatePresence>
           {gameState.status === GameStatus.UPGRADING && (
             <motion.div 
                initial={{ opacity: 0 }}
                animate={{ opacity: 1 }}
                exit={{ opacity: 0 }}
-               className="absolute inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center p-8"
+               className="absolute inset-0 z-[60] bg-slate-950/95 backdrop-blur-md flex flex-col items-center p-8 pt-16"
             >
                <motion.h2 
                  initial={{ y: -20 }}
                  animate={{ y: 0 }}
-                 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-slate-400 mb-8 uppercase tracking-widest"
+                 className="text-4xl font-black text-white mb-10 italic uppercase tracking-tighter"
                >
-                 升级强化
+                 Power Up!
                </motion.h2>
-               <div className="flex gap-4 w-full max-w-2xl">
+               <div className="flex flex-col gap-4 w-full overflow-y-auto pb-8 scrollbar-hide">
                  {gameState.nextUpgrades.map((upgrade, idx) => (
                    <motion.button
                      key={idx}
-                     whileHover={{ scale: 1.05, y: -5 }}
-                     whileTap={{ scale: 0.95 }}
+                     initial={{ x: -20, opacity: 0 }}
+                     animate={{ x: 0, opacity: 1 }}
+                     transition={{ delay: idx * 0.1 }}
+                     whileTap={{ scale: 0.98, backgroundColor: 'rgba(59, 130, 246, 0.1)' }}
                      onClick={() => handleUpgrade(upgrade)}
-                     className="flex-1 bg-slate-900 border-2 border-slate-800 hover:border-blue-500 p-6 rounded-2xl text-left transition-colors flex flex-col gap-4 shadow-xl"
+                     className="flex bg-slate-900/50 border border-slate-800 p-5 rounded-[2rem] text-left transition-all active:border-blue-500 group"
                    >
-                     <div className="p-3 bg-blue-500/20 rounded-xl w-fit">
+                     <div className="p-4 bg-slate-800 rounded-2xl mr-4 flex-shrink-0 self-center border border-white/5">
                        {upgrade.type === 'WEAPON' ? <Sword className="text-blue-400" /> : <Shield className="text-emerald-400" />}
                      </div>
-                     <div>
-                       <h3 className="text-xl font-bold text-white mb-1">{upgrade.name}</h3>
-                       <p className="text-sm text-slate-400 leading-relaxed font-medium">{upgrade.description}</p>
-                     </div>
-                     <div className="mt-auto pt-4 border-t border-slate-800">
-                        <span className="text-[10px] font-black uppercase text-blue-500 tracking-widest">点击选择</span>
+                     <div className="flex-1 pr-2">
+                       <h3 className="text-lg font-black text-white mb-0.5 group-active:text-blue-400">{upgrade.name}</h3>
+                       <p className="text-xs text-slate-400 font-medium leading-tight">{upgrade.description}</p>
                      </div>
                    </motion.button>
                  ))}
@@ -418,83 +500,109 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Menu Screen */}
+        {/* Menu Screen - True Portrait Layout */}
         <AnimatePresence>
           {gameState.status === GameStatus.MENU && (
             <motion.div 
                initial={{ opacity: 0 }}
                animate={{ opacity: 1 }}
                exit={{ opacity: 0 }}
-               className="absolute inset-0 z-50 bg-[#0f172a] flex flex-col items-center justify-center p-12 text-center"
+               className="absolute inset-0 z-50 bg-[#020617] flex flex-col items-center justify-between py-20 px-8 text-center"
             >
-               <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: 'radial-gradient(#ffffff 1px, transparent 1px)', backgroundSize: '24px 24px' }}></div>
-               <motion.div
-                 animate={{ y: [0, -10, 0] }}
-                 transition={{ repeat: Infinity, duration: 3 }}
-                 className="text-8xl mb-8 filter drop-shadow-[0_0_30px_rgba(59,130,246,0.4)]"
-               >
-                 💠
-               </motion.div>
-               <h1 className="text-6xl font-black text-white tracking-tighter mb-4 italic">PROJECT: BRO</h1>
-               <p className="text-slate-400 max-w-md mb-12 font-medium">无尽的怪兽潮正在逼近。生存，杀戮，进化。你是最后的防线。</p>
-               
-               <button 
-                 onClick={startGame}
-                 className="group relative px-12 py-5 bg-blue-600 hover:bg-blue-500 text-white font-black text-xl rounded-2xl shadow-[0_0_40px_-5px_rgba(59,130,246,0.5)] transition-all active:scale-95 flex items-center gap-3"
-               >
-                 <Play className="fill-white" /> 开始射击
-                 <div className="absolute -inset-0.5 bg-blue-400 rounded-2xl blur opacity-30 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
-               </button>
+               {/* Background Decorative Polish */}
+               <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                  <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-64 h-64 bg-blue-600/10 blur-[120px] rounded-full" />
+                  <div className="absolute bottom-1/4 left-1/4 w-32 h-32 bg-purple-600/10 blur-[80px] rounded-full" />
+                  <div className="absolute inset-0 opacity-5" style={{ backgroundImage: 'linear-gradient(0deg, #ffffff 1px, transparent 1px), linear-gradient(90deg, #ffffff 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
+               </div>
 
-               <div className="mt-16 grid grid-cols-3 gap-8 text-slate-500">
-                  <div className="flex flex-col items-center gap-1">
-                    <Compass size={20} />
-                    <span className="text-[10px] font-bold uppercase tracking-widest">WASD 移动</span>
-                  </div>
-                  <div className="flex flex-col items-center gap-1">
-                    <Target size={20} />
-                    <span className="text-[10px] font-bold uppercase tracking-widest">自动瞄准</span>
-                  </div>
-                  <div className="flex flex-col items-center gap-1">
-                    <Flame size={20} />
-                    <span className="text-[10px] font-bold uppercase tracking-widest">无限进化</span>
-                  </div>
+               <div className="relative z-10 flex flex-col items-center">
+                   <motion.div
+                     animate={{ 
+                       rotate: [0, 5, -5, 0],
+                       scale: [1, 1.05, 1]
+                     }}
+                     transition={{ repeat: Infinity, duration: 4 }}
+                     className="text-8xl mb-6 filter drop-shadow-[0_0_20px_rgba(59,130,246,0.3)]"
+                   >
+                     🚀
+                   </motion.div>
+                   <h1 className="text-6xl font-[1000] text-white tracking-[-0.1em] mb-2 leading-none italic uppercase">
+                     Project<br/>
+                     <span className="text-blue-500 tracking-tighter">Bro</span>
+                   </h1>
+                   <p className="text-slate-500 font-bold max-w-[240px] text-xs uppercase tracking-widest leading-relaxed">
+                     Survivors.io Style<br/>
+                     Mobile Roguelike SHOOTER
+                   </p>
+               </div>
+               
+               <div className="relative z-10 w-full flex flex-col items-center gap-6">
+                   <button 
+                     onClick={startGame}
+                     className="w-full py-6 bg-blue-600 hover:bg-blue-500 text-white font-black text-2xl rounded-[2.5rem] shadow-[0_20px_50px_-10px_rgba(59,130,246,0.5)] transition-all active:scale-95 active:shadow-inner flex items-center justify-center gap-3 border-b-4 border-blue-800"
+                   >
+                     <Play size={28} className="fill-white" /> 进 入 战 场
+                   </button>
+                   
+                   <div className="flex gap-8 text-slate-500 py-4">
+                      <div className="flex flex-col items-center gap-2">
+                        <Compass className="text-blue-500/50" />
+                        <span className="text-[10px] font-black">TOUCH</span>
+                      </div>
+                      <div className="flex flex-col items-center gap-2">
+                        <Target className="text-blue-500/50" />
+                        <span className="text-[10px] font-black">AUTO</span>
+                      </div>
+                      <div className="flex flex-col items-center gap-2">
+                        <Flame className="text-blue-500/50" />
+                        <span className="text-[10px] font-black">ROGUE</span>
+                      </div>
+                   </div>
                </div>
             </motion.div>
           )}
         </AnimatePresence>
 
-        {/* Game Over Screen */}
+        {/* Game Over Screen - Portrait */}
         <AnimatePresence>
           {gameState.status === GameStatus.GAME_OVER && (
             <motion.div 
-               initial={{ opacity: 0, scale: 0.9 }}
-               animate={{ opacity: 1, scale: 1 }}
-               className="absolute inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center"
+               initial={{ opacity: 0, y: 50 }}
+               animate={{ opacity: 1, y: 0 }}
+               className="absolute inset-0 z-[100] bg-slate-950/95 backdrop-blur-xl flex flex-col items-center justify-center p-10 text-center"
             >
-               <h2 className="text-7xl font-black text-rose-600 mb-2 italic">战斗终止</h2>
-               <p className="text-xl text-slate-400 mb-12 font-bold uppercase tracking-widest">你已被毁灭...</p>
+               <motion.div 
+                 initial={{ scale: 0 }}
+                 animate={{ scale: 1 }}
+                 className="w-24 h-24 bg-rose-500/20 rounded-full flex items-center justify-center mb-6 border-2 border-rose-500/50"
+               >
+                 <Trophy size={48} className="text-rose-500" />
+               </motion.div>
                
-               <div className="bg-slate-900/50 border border-slate-800 p-8 rounded-3xl mb-12 min-w-[320px]">
-                  <div className="grid grid-cols-2 gap-8">
-                     <div className="text-left">
-                        <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">生存波次</div>
-                        <div className="text-3xl font-black text-blue-400">{gameState.wave}</div>
+               <h2 className="text-6xl font-[1000] text-white mb-2 italic tracking-tighter uppercase">Defeated</h2>
+               <p className="text-sm text-slate-500 mb-10 font-bold uppercase tracking-[0.3em]">You fought bravely, Bro.</p>
+               
+               <div className="w-full bg-slate-900 border border-white/5 p-8 rounded-[3rem] mb-12 shadow-2xl">
+                  <div className="grid grid-cols-1 gap-6">
+                     <div className="flex justify-between items-center border-b border-white/5 pb-4">
+                        <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Waves Survived</span>
+                        <span className="text-3xl font-black text-blue-400">{gameState.wave}</span>
                      </div>
-                     <div className="text-left">
-                        <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">最终等级</div>
-                        <div className="text-3xl font-black text-purple-400">Lv.{gameState.player.level}</div>
+                     <div className="flex justify-between items-center border-b border-white/5 pb-4">
+                        <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Level Reached</span>
+                        <span className="text-3xl font-black text-purple-400">{gameState.player.level}</span>
                      </div>
-                     <div className="text-left col-span-2">
-                        <div className="text-[10px] text-slate-500 font-bold uppercase mb-1">最终得分</div>
-                        <div className="text-4xl font-black text-white tabular-nums">{gameState.score}</div>
+                     <div className="flex justify-between items-center">
+                        <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Total Score</span>
+                        <span className="text-3xl font-black text-white tabular-nums">{gameState.score.toLocaleString()}</span>
                      </div>
                   </div>
                </div>
 
                <button 
                  onClick={resetGame}
-                 className="px-12 py-5 bg-white text-slate-950 font-black text-xl rounded-2xl shadow-2xl transition-all hover:bg-slate-200 active:scale-95 flex items-center gap-3"
+                 className="w-full py-6 bg-white text-slate-950 font-black text-xl rounded-[2.5rem] shadow-2xl shadow-white/10 transition-all active:scale-95 flex items-center justify-center gap-3"
                >
                  <RotateCcw size={24} /> 再次尝试
                </button>
@@ -503,11 +611,6 @@ export default function App() {
         </AnimatePresence>
       </div>
 
-      <div className="mt-8 text-center text-slate-500 max-w-sm">
-        <p className="text-xs font-medium leading-relaxed">
-          TIP: 移动以避开怪物，自动攻击系统会处理剩下的事情。寻找紫色晶体来升级你的角色！
-        </p>
-      </div>
     </div>
   );
 }

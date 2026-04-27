@@ -2,8 +2,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export const GAME_WIDTH = 800;
-export const GAME_HEIGHT = 600;
+export const GAME_WIDTH = 450;
+export const GAME_HEIGHT = 800;
 
 export const INITIAL_PLAYER_STATS = {
   hp: 100,
@@ -20,7 +20,7 @@ export const INITIAL_PLAYER_STATS = {
   pierce: 0,
   multiShot: 1,
   knockback: 0,
-  radius: 15,
+  radius: 8, // Smaller hitbox for better feel
   killCount: 0
 };
 
@@ -34,10 +34,10 @@ export const WEAPON_TYPES = {
   PISTOL: {
     name: '基础手枪',
     type: 'projectile' as const,
-    damage: 10,
-    cooldown: 800,
-    range: 400,
-    projectileSpeed: 7,
+    damage: 15,
+    cooldown: 400,
+    range: 600,
+    projectileSpeed: 10,
     color: '#fff'
   },
   SHOTGUN: {
