@@ -43,7 +43,7 @@ class AudioManager {
     if (this.bgm) this.bgm.volume = bgm;
   }
 
-  playBGM(url: string = 'https://assets.mixkit.co/music/preview/mixkit-arcade-retro-game-211.mp3') {
+  playBGM(url: string = 'https://assets.mixkit.co/music/preview/mixkit-games-world-614.mp3') {
     if (!this.enabled) return;
     if (this.bgm) {
       if (this.bgm.src === url) return;

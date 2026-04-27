@@ -12,9 +12,9 @@ export const INITIAL_PLAYER_STATS = {
   xp: 0,
   level: 1,
   maxXp: 15,
-  attackPower: 0.85, // Slightly buffed from 0.8
+  attackPower: 1.1, // Buffed from 0.85
   attackSpeed: 0.8,
-  critRate: 0.05, // Slightly buffed from 0.03
+  critRate: 0.1, // Buffed from 0.05
   critDamage: 1.5,
   lifesteal: 0,
   pierce: 0,
@@ -36,7 +36,7 @@ export const WEAPON_TYPES = {
   PISTOL: {
     name: '基础手枪',
     type: 'projectile' as const,
-    damage: 10, // 0.8 * 10 = 8 dmg
+    damage: 12, // Buffed from 10
     cooldown: 400,
     range: 600,
     projectileSpeed: 10,
@@ -64,7 +64,7 @@ export const WEAPON_TYPES = {
 
 export const ENEMY_TEMPLATES = {
   BASIC: {
-    hp: 35,
+    hp: 25, // Reduced from 35
     speed: 1.4, // Differentiated (was 1.6)
     damage: 6,
     radius: 12,

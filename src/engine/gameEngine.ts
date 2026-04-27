@@ -100,33 +100,49 @@ export const updatePlayer = (player: Player, keys: Set<string>, joystickVector?:
   const targetMove = { x: 0, y: 0 };
 
   if (joystickVector && (joystickVector.x !== 0 || joystickVector.y !== 0)) {
-    targetMove.x = joystickVector.x;
-    targetMove.y = joystickVector.y;
+    // 1. Deadzone (0.15)
+    const deadzone = 0.15;
+    const mag = Math.sqrt(joystickVector.x**2 + joystickVector.y**2);
+    
+    if (mag > deadzone) {
+      // Re-scale input after deadzone to keep full range
+      const normMag = (mag - deadzone) / (1 - deadzone);
+      targetMove.x = (joystickVector.x / mag) * normMag;
+      targetMove.y = (joystickVector.y / mag) * normMag;
+    }
   } else {
     if (keys.has('w') || keys.has('ArrowUp')) targetMove.y -= 1;
     if (keys.has('s') || keys.has('ArrowDown')) targetMove.y += 1;
     if (keys.has('a') || keys.has('ArrowLeft')) targetMove.x -= 1;
     if (keys.has('d') || keys.has('ArrowRight')) targetMove.x += 1;
-  }
-
-  // Normalize target move
-  let tx = 0;
-  let ty = 0;
-  if (targetMove.x !== 0 || targetMove.y !== 0) {
-    const length = Math.sqrt(targetMove.x * targetMove.x + targetMove.y * targetMove.y);
-    tx = (targetMove.x / length) * player.speed;
-    ty = (targetMove.y / length) * player.speed;
-    if (joystickVector && (joystickVector.x !== 0 || joystickVector.y !== 0)) {
-        tx = targetMove.x * player.speed;
-        ty = targetMove.y * player.speed;
+    
+    // Normalize keyboard input
+    if (targetMove.x !== 0 || targetMove.y !== 0) {
+      const length = Math.sqrt(targetMove.x * targetMove.x + targetMove.y * targetMove.y);
+      targetMove.x /= length;
+      targetMove.y /= length;
     }
   }
 
-  // Smooth Inertia
-  const lerp = 0.15;
-  player.vel.x += (tx - player.vel.x) * lerp;
-  player.vel.y += (ty - player.vel.y) * lerp;
+  // 2. Acceleration / Friction System
+  const acceleration = 0.45; // How fast we reach target speed
+  const friction = 0.90;   // Inertia factor (0.88-0.94)
+  
+  // Calculate Target Velocity
+  const targetVelX = targetMove.x * player.speed;
+  const targetVelY = targetMove.y * player.speed;
 
+  // Apply acceleration towards target
+  player.vel.x += (targetVelX - player.vel.x) * acceleration;
+  player.vel.y += (targetVelY - player.vel.y) * acceleration;
+
+  // Apply friction (smooth stop)
+  if (targetMove.x === 0 && targetMove.y === 0) {
+      player.vel.x *= friction;
+      player.vel.y *= friction;
+  }
+
+  // Final position update
   player.pos.x += player.vel.x;
   player.pos.y += player.vel.y;
 

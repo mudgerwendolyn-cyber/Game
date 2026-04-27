@@ -20,7 +20,9 @@ import {
   Pause,
   X,
   Share2,
-  Check
+  Check,
+  Home,
+  Copy
 } from 'lucide-react';
 import { 
   GameState, 
@@ -52,7 +54,7 @@ import {
 import { drawGame } from './engine/rendering';
 import { audio } from './engine/audio';
 
-const INITIAL_STATE: GameState = {
+const getInitialState = (): GameState => ({
   status: GameStatus.MENU,
   player: createPlayer(),
   players: {}, // For multiplayer
@@ -68,12 +70,12 @@ const INITIAL_STATE: GameState = {
   gameTime: 0,
   score: 0,
   level: 1,
-  experience: 0, // Fallback fields if needed by templates
-  experienceToNextLevel: 100, // Fallback fields if needed by templates
+  experience: 0,
+  experienceToNextLevel: 100,
   nextUpgrades: [],
   damageNumbers: [],
   particles: []
-};
+});
 
 // Available Upgrades Pool
 const UPGRADES: Upgrade[] = [
@@ -128,7 +130,7 @@ const UPGRADES: Upgrade[] = [
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [gameState, setGameState] = useState<GameState>(INITIAL_STATE);
+  const [gameState, setGameState] = useState<GameState>(getInitialState());
   const [shake, setShake] = useState(0);
   const [joystick, setJoystick] = useState<Vector>({ x: 0, y: 0 });
   const [joystickCenter, setJoystickCenter] = useState<Vector | null>(null);
@@ -136,7 +138,7 @@ export default function App() {
   const keysRef = useRef<Set<string>>(new Set());
   const requestRef = useRef<number>();
   const lastTimeRef = useRef<number>(0);
-  const gameStateRef = useRef<GameState>(INITIAL_STATE);
+  const gameStateRef = useRef<GameState>(getInitialState());
   const [isMultiplayer, setIsMultiplayer] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const [roomUsers, setRoomUsers] = useState<number>(1);
@@ -174,7 +176,7 @@ export default function App() {
         if (data.player.hp <= 0) return;
 
         const newState: GameState = {
-            ...INITIAL_STATE,
+            ...getInitialState(),
             ...data,
             status: GameStatus.PLAYING
         };
@@ -186,6 +188,12 @@ export default function App() {
     } catch (e) {
         console.error('Failed to load game', e);
     }
+  };
+
+  const backToMenu = () => {
+    gameStateRef.current.status = GameStatus.MENU;
+    setGameState({ ...gameStateRef.current });
+    audio.playSFX('click');
   };
 
   useEffect(() => {
@@ -240,6 +248,7 @@ export default function App() {
     
     setIsMultiplayer(true);
     setIsHost(true);
+    setRoomUsers(1);
     gameStateRef.current.status = GameStatus.LOBBY;
     setGameState({ ...gameStateRef.current });
   };
@@ -261,9 +270,28 @@ export default function App() {
 
     setIsMultiplayer(true);
     setIsHost(false);
-    setRoomId(cleanId);
     gameStateRef.current.status = GameStatus.LOBBY;
     setGameState({ ...gameStateRef.current });
+  };
+
+  const leaveRoom = () => {
+    socketRef.current?.disconnect();
+    setIsMultiplayer(false);
+    setIsHost(false);
+    setRoomId(null);
+    setRoomUsers(1);
+    const newState = getInitialState();
+    gameStateRef.current = newState;
+    setGameState({ ...newState });
+    window.history.replaceState({}, '', window.location.pathname);
+    
+    // Re-init socket for next potential game
+    socketRef.current = io({
+      transports: ['websocket', 'polling'],
+      autoConnect: true,
+      reconnectionAttempts: 5
+    });
+    setupSocketListeners();
   };
 
   const setupSocketListeners = () => {
@@ -272,18 +300,25 @@ export default function App() {
 
     s.on('room_created', (id) => {
       setRoomId(id);
+      setJoinId('');
       window.history.replaceState({}, '', `?room=${id}`);
     });
 
     s.on('room_update', ({ members, roomId: sRoomId, host }) => {
       setRoomUsers(members.length);
       setIsHost(s.id === host);
-      if (sRoomId) setRoomId(sRoomId); // Ensure local ID matches server
+      if (sRoomId) {
+        setRoomId(sRoomId); 
+        setJoinId('');
+      }
     });
 
     s.on('room_error', (msg) => {
       setErrorStatus(msg);
-      setRoomId(null); // Clear invalid room ID
+      setRoomId(null); 
+      setIsMultiplayer(false);
+      gameStateRef.current.status = GameStatus.MENU;
+      setGameState({ ...gameStateRef.current });
       setTimeout(() => setErrorStatus(null), 3000);
     });
 
@@ -348,13 +383,21 @@ export default function App() {
     setIsHost(false);
     window.history.replaceState({}, '', window.location.pathname);
     const player = createPlayer();
-    const newState = { ...INITIAL_STATE, player, status: GameStatus.MENU };
+    const newState = { ...getInitialState(), player, status: GameStatus.MENU };
     gameStateRef.current = newState;
     setGameState({ ...newState });
     lastTimeRef.current = 0;
   };
 
   const [copied, setCopied] = useState(false);
+
+  const handleCopyRoomId = (id: string) => {
+    const url = `${window.location.origin}${window.location.pathname}?room=${id}`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
 
   const handleShare = () => {
     const shareUrl = roomId ? `${window.location.origin}${window.location.pathname}?room=${roomId}` : window.location.href;
@@ -366,9 +409,12 @@ export default function App() {
   const startGame = () => {
     setIsMultiplayer(false);
     const player = createPlayer();
-    gameStateRef.current = { ...INITIAL_STATE, player, status: GameStatus.PLAYING };
+    gameStateRef.current = { ...getInitialState(), player, status: GameStatus.PLAYING };
     setGameState(gameStateRef.current);
     lastTimeRef.current = 0;
+    // Clear save when starting a completely new game
+    localStorage.removeItem('coreblast_save');
+    setHasSavedGame(false);
   };
 
   const startMultiplayer = () => {
@@ -592,21 +638,23 @@ export default function App() {
       const rect = container.getBoundingClientRect();
       const pos = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
       
-      // Dynamic follow logic
+      // Dynamic follow logic: Update center if finger moves beyond limit
       const dx = pos.x - joystickCenter.x;
       const dy = pos.y - joystickCenter.y;
       const dist = Math.sqrt(dx * dx + dy * dy);
       const limit = 50;
       
+      let effectiveCenter = joystickCenter;
       if (dist > limit) {
         const angle = Math.atan2(dy, dx);
-        setJoystickCenter({
+        effectiveCenter = {
           x: pos.x - Math.cos(angle) * limit,
           y: pos.y - Math.sin(angle) * limit
-        });
+        };
+        setJoystickCenter(effectiveCenter);
       }
       
-      handleJoystick(pos, joystickCenter);
+      handleJoystick(pos, effectiveCenter);
     };
 
     const handleTouchEndGlobal = () => {
@@ -663,11 +711,14 @@ export default function App() {
       const limit = 50; // Max visual drag distance
       
       if (mag > 0) {
+        // Output normalized vector for the engine
         const normalizedMag = Math.min(mag, limit) / limit;
         setJoystick({
           x: (dx / mag) * normalizedMag,
           y: (dy / mag) * normalizedMag
         });
+      } else {
+        setJoystick({ x: 0, y: 0 });
       }
     }
   };
@@ -955,12 +1006,20 @@ export default function App() {
                  className="bg-slate-900 border border-white/5 p-10 rounded-[3rem] shadow-2xl w-full max-w-[300px]"
                >
                  <h2 className="text-5xl font-black text-white mb-8 italic uppercase tracking-tighter">已 暂 停</h2>
-                 <button 
-                   onClick={togglePause}
-                   className="w-full py-5 bg-blue-600 text-white font-black text-xl rounded-[2rem] shadow-[0_10px_30px_-5px_rgba(59,130,246,0.5)] transition-all active:scale-95 flex items-center justify-center gap-3 border-b-4 border-blue-800"
-                 >
-                   <Play size={24} fill="white" /> 继 续
-                 </button>
+                 <div className="flex flex-col gap-3 w-full">
+                   <button 
+                     onClick={togglePause}
+                     className="w-full py-5 bg-blue-600 text-white font-black text-xl rounded-[2rem] shadow-[0_10px_30px_-5px_rgba(59,130,246,0.5)] transition-all active:scale-95 flex items-center justify-center gap-3 border-b-4 border-blue-800"
+                   >
+                     <Play size={24} fill="white" /> 继 续
+                   </button>
+                   <button 
+                     onClick={backToMenu}
+                     className="w-full py-4 bg-slate-800 text-slate-300 font-bold text-lg rounded-[2rem] transition-all active:scale-95 flex items-center justify-center gap-3 border-b-4 border-slate-950"
+                   >
+                     <Home size={20} /> 返回主页
+                   </button>
+                 </div>
                </motion.div>
             </motion.div>
           )}
@@ -1118,12 +1177,20 @@ export default function App() {
                   </div>
                </div>
 
-               <button 
-                 onClick={resetGame}
-                 className="w-full py-6 bg-white text-slate-950 font-black text-xl rounded-[2.5rem] shadow-2xl shadow-white/10 transition-all active:scale-95 flex items-center justify-center gap-3"
-               >
-                 <RotateCcw size={24} /> 再次尝试
-               </button>
+               <div className="flex flex-col gap-3 w-full">
+                 <button 
+                   onClick={onStart}
+                   className="w-full py-6 bg-white text-slate-950 font-black text-xl rounded-[2.5rem] shadow-2xl shadow-white/10 transition-all active:scale-95 flex items-center justify-center gap-3"
+                 >
+                   <RotateCcw size={24} /> 再次尝试
+                 </button>
+                 <button 
+                    onClick={backToMenu}
+                    className="w-full py-4 bg-slate-800 text-white font-black text-lg rounded-[2.5rem] border-b-4 border-slate-950 flex items-center justify-center gap-3"
+                  >
+                    <Home size={20} /> 返回主页
+                  </button>
+               </div>
             </motion.div>
           )}
         </AnimatePresence>
