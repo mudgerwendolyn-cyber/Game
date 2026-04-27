@@ -6,6 +6,7 @@ export enum GameStatus {
   MENU,
   PLAYING,
   UPGRADING,
+  PAUSED,
   GAME_OVER
 }
 
@@ -94,6 +95,7 @@ export interface XPgem extends Entity {
 export interface GameState {
   status: GameStatus;
   player: Player;
+  players: Record<string, Player>; // For multiplayer
   enemies: Enemy[];
   projectiles: Projectile[];
   weapons: Weapon[];

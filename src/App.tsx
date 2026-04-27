@@ -4,6 +4,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { io, Socket } from 'socket.io-client';
 import { 
   Play, 
   RotateCcw, 
@@ -15,7 +16,11 @@ import {
   Compass, 
   Trophy,
   Flame,
-  Star
+  Star,
+  Pause,
+  X,
+  Share2,
+  Check
 } from 'lucide-react';
 import { 
   GameState, 
@@ -46,6 +51,7 @@ import { drawGame } from './engine/rendering';
 const INITIAL_STATE: GameState = {
   status: GameStatus.MENU,
   player: createPlayer(),
+  players: {}, // For multiplayer
   enemies: [],
   projectiles: [],
   weapons: [{ 
@@ -120,11 +126,15 @@ export default function App() {
   const [gameState, setGameState] = useState<GameState>(INITIAL_STATE);
   const [shake, setShake] = useState(0);
   const [joystick, setJoystick] = useState<Vector>({ x: 0, y: 0 });
+  const [joystickCenter, setJoystickCenter] = useState<Vector | null>(null);
   const [isMobile, setIsMobile] = useState(false);
   const keysRef = useRef<Set<string>>(new Set());
   const requestRef = useRef<number>();
   const lastTimeRef = useRef<number>(0);
   const gameStateRef = useRef<GameState>(INITIAL_STATE);
+  const [isMultiplayer, setIsMultiplayer] = useState(false);
+  const socketRef = useRef<Socket | null>(null);
+  const [roomUsers, setRoomUsers] = useState<number>(1);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -136,17 +146,83 @@ export default function App() {
   }, []);
 
   const resetGame = () => {
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+      socketRef.current = null;
+    }
+    setIsMultiplayer(false);
+    setRoomUsers(1);
     const player = createPlayer();
     gameStateRef.current = { ...INITIAL_STATE, player };
     setGameState(gameStateRef.current);
     lastTimeRef.current = 0;
   };
 
+  const [copied, setCopied] = useState(false);
+
+  const handleShare = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   const startGame = () => {
+    setIsMultiplayer(false);
     const player = createPlayer();
     gameStateRef.current = { ...INITIAL_STATE, player, status: GameStatus.PLAYING };
     setGameState(gameStateRef.current);
     lastTimeRef.current = 0;
+  };
+
+  const startMultiplayer = () => {
+    setIsMultiplayer(true);
+    const player = createPlayer();
+    gameStateRef.current = { ...INITIAL_STATE, player, status: GameStatus.PLAYING };
+    setGameState(gameStateRef.current);
+    lastTimeRef.current = 0;
+
+    // Connect to socket
+    if (!socketRef.current) {
+      socketRef.current = io();
+      socketRef.current.on('connect', () => {
+        if (socketRef.current) {
+          gameStateRef.current.player.id = socketRef.current.id || 'player';
+          socketRef.current.emit('join', { 
+            pos: player.pos, 
+            hp: player.hp, 
+            level: player.level,
+            radius: player.radius // Add radius to keep rendering consistent
+          });
+        }
+      });
+      socketRef.current.on('players_update', (players) => {
+        setRoomUsers(Object.keys(players).length);
+        gameStateRef.current.players = players;
+      });
+      socketRef.current.on('player_moved', ({ id, pos }) => {
+        if (gameStateRef.current.players[id]) {
+          gameStateRef.current.players[id].pos = pos;
+        }
+      });
+      socketRef.current.on('player_state_update', ({ id, state }) => {
+        if (gameStateRef.current.players[id]) {
+          gameStateRef.current.players[id] = { ...gameStateRef.current.players[id], ...state };
+        }
+      });
+      socketRef.current.on('enemies_update', (enemies) => {
+         // Only follow remote enemies if we are not the host
+         // For simplicity, skip host check and just overwrite if we want global sync
+      });
+    }
+  };
+
+  const togglePause = () => {
+    if (isMultiplayer) return; // Cannot pause in multiplayer
+    setGameState(prev => {
+      const newStatus = prev.status === GameStatus.PLAYING ? GameStatus.PAUSED : GameStatus.PLAYING;
+      gameStateRef.current.status = newStatus;
+      return { ...prev, status: newStatus };
+    });
   };
 
   const pickUpgrades = () => {
@@ -177,13 +253,23 @@ export default function App() {
       const { player, enemies, projectiles, xpGems, weapons, damageNumbers } = state;
 
       // 1. Player Update
+      const oldPos = { ...player.pos };
       updatePlayer(player, keysRef.current, joystick);
+      
+      if (isMultiplayer && (oldPos.x !== player.pos.x || oldPos.y !== player.pos.y)) {
+          socketRef.current?.emit('move', player.pos);
+      }
 
-      // 2. Enemy Spawning - frequency increases with time
-      const baseRate = 1000;
-      const spawnRate = Math.max(100, baseRate / (1 + (state.gameTime / 60000) * 0.5));
-      if (Math.random() < (deltaTime / spawnRate)) {
-        state.enemies.push(spawnEnemy(state.gameTime, player.pos));
+      // 2. Enemy Spawning
+      // host handles spawning in multiplayer
+      const isHost = !isMultiplayer || Object.keys(state.players)[0] === socketRef.current?.id;
+
+      if (isHost) {
+        const baseRate = 1000;
+        const spawnRate = Math.max(100, baseRate / (1 + (state.gameTime / 60000) * 0.5));
+        if (Math.random() < (deltaTime / spawnRate)) {
+          state.enemies.push(spawnEnemy(state.gameTime, player.pos));
+        }
       }
 
       // Wave tracking
@@ -194,6 +280,7 @@ export default function App() {
       updateEnemies(state);
       if (player.hp < oldHp) {
           setShake(10);
+          if (isMultiplayer) socketRef.current?.emit('player_state', { hp: player.hp });
       }
 
       // 4. Combat / AutoFire
@@ -341,17 +428,21 @@ export default function App() {
     };
   }, [gameState.status]);
 
-  const handleJoystick = (pos: Vector | null) => {
-    if (!pos) {
+  const handleJoystick = (pos: Vector | null, center: Vector | null = null) => {
+    if (!pos || !center) {
       setJoystick({ x: 0, y: 0 });
+      setJoystickCenter(null);
     } else {
-      const mag = Math.sqrt(pos.x * pos.x + pos.y * pos.y);
-      const limit = 64; // Distance from center
+      const dx = pos.x - center.x;
+      const dy = pos.y - center.y;
+      const mag = Math.sqrt(dx * dx + dy * dy);
+      const limit = 50; // Max visual drag distance
+      
       if (mag > 0) {
         const normalizedMag = Math.min(mag, limit) / limit;
         setJoystick({
-          x: (pos.x / mag) * normalizedMag,
-          y: (pos.y / mag) * normalizedMag
+          x: (dx / mag) * normalizedMag,
+          y: (dy / mag) * normalizedMag
         });
       }
     }
@@ -372,39 +463,53 @@ export default function App() {
           className="w-full h-full block touch-none"
         />
 
-        {/* Mobile Joystick Area - Full bottom half for better touch response */}
+        {/* Mobile Joystick Area - Dynamic 'Follow the Finger' */}
         {gameState.status === GameStatus.PLAYING && (
-          <div className="absolute inset-x-0 bottom-0 top-1/2 z-50 pointer-events-none md:pointer-events-auto">
-             <div 
-               className="absolute bottom-16 left-1/2 -translate-x-1/2 w-32 h-32 bg-white/5 backdrop-blur-sm rounded-full border border-white/10 flex items-center justify-center touch-none pointer-events-auto shadow-inner"
-               onTouchStart={(e) => {
-                 const touch = e.touches[0];
-                 const rect = e.currentTarget.getBoundingClientRect();
-                 const x = touch.clientX - (rect.left + rect.width / 2);
-                 const y = touch.clientY - (rect.top + rect.height / 2);
-                 handleJoystick({ x, y });
-               }}
-               onTouchMove={(e) => {
-                 const touch = e.touches[0];
-                 const rect = e.currentTarget.getBoundingClientRect();
-                 const x = touch.clientX - (rect.left + rect.width / 2);
-                 const y = touch.clientY - (rect.top + rect.height / 2);
-                 handleJoystick({ x, y });
-               }}
-               onTouchEnd={() => handleJoystick(null)}
-             >
-                <motion.div 
-                  className="w-14 h-14 bg-gradient-to-br from-blue-400 to-blue-600 rounded-full shadow-2xl shadow-blue-500/50 border-2 border-white/20"
-                  animate={{ 
-                    x: joystick.x * 45, 
-                    y: joystick.y * 45 
-                  }}
-                  transition={{ type: 'spring', damping: 12, stiffness: 150 }}
-                />
-                
-                {/* Visual feedback for joystick range */}
-                <div className="absolute inset-0 rounded-full border-2 border-blue-500/20 animate-pulse scale-110 pointer-events-none" />
-             </div>
+          <div 
+            className="absolute inset-x-0 bottom-0 top-1/3 z-50 touch-none pointer-events-auto"
+            onTouchStart={(e) => {
+              const touch = e.touches[0];
+              const rect = e.currentTarget.getBoundingClientRect();
+              const center = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+              setJoystickCenter(center);
+              handleJoystick(center, center);
+            }}
+            onTouchMove={(e) => {
+              if (!joystickCenter) return;
+              const touch = e.touches[0];
+              const rect = e.currentTarget.getBoundingClientRect();
+              const pos = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+              handleJoystick(pos, joystickCenter);
+            }}
+            onTouchEnd={() => {
+              handleJoystick(null, null);
+            }}
+          >
+             <AnimatePresence>
+                {joystickCenter && (
+                  <motion.div 
+                    initial={{ scale: 0, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0, opacity: 0 }}
+                    className="absolute w-24 h-24 bg-white/5 backdrop-blur-sm rounded-full border border-white/10 flex items-center justify-center pointer-events-none shadow-inner"
+                    style={{ 
+                      left: joystickCenter.x, 
+                      top: joystickCenter.y,
+                      transform: 'translate(-50%, -50%)' 
+                    }}
+                  >
+                     <motion.div 
+                       className="w-12 h-12 bg-gradient-to-br from-blue-400 to-blue-600 rounded-full shadow-2xl shadow-blue-500/50 border-2 border-white/20"
+                       animate={{ 
+                         x: joystick.x * 40, 
+                         y: joystick.y * 40 
+                       }}
+                       transition={{ type: 'spring', damping: 15, stiffness: 200 }}
+                     />
+                     <div className="absolute inset-0 rounded-full border-2 border-blue-500/20 animate-pulse scale-110" />
+                  </motion.div>
+                )}
+             </AnimatePresence>
           </div>
         )}
 
@@ -420,6 +525,12 @@ export default function App() {
                         {String(Math.floor((gameState.gameTime % 60000) / 1000)).padStart(2, '0')}
                     </span>
                 </div>
+                {isMultiplayer && (
+                  <div className="flex flex-col items-center">
+                    <span className="text-[8px] font-black text-emerald-500 uppercase tracking-widest">Online</span>
+                    <span className="text-xs font-black text-white">{roomUsers} Players</span>
+                  </div>
+                )}
                 <div className="flex flex-col items-end">
                     <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Wave</span>
                     <span className="text-xl font-black text-blue-400 italic">#{gameState.wave}</span>
@@ -500,6 +611,42 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        {/* Pause Button */}
+        {gameState.status === GameStatus.PLAYING && !isMultiplayer && (
+          <button 
+            onClick={togglePause}
+            className="absolute top-6 right-6 z-[70] p-4 bg-slate-900/50 backdrop-blur-md rounded-full border border-white/10 text-white pointer-events-auto shadow-2xl active:scale-90 transition-transform"
+          >
+            <Pause size={24} />
+          </button>
+        )}
+
+        {/* Pause Overlay */}
+        <AnimatePresence>
+          {gameState.status === GameStatus.PAUSED && (
+            <motion.div 
+               initial={{ opacity: 0 }}
+               animate={{ opacity: 1 }}
+               exit={{ opacity: 0 }}
+               className="absolute inset-0 z-[80] bg-slate-950/70 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center"
+            >
+               <motion.div
+                 initial={{ scale: 0.8, opacity: 0 }}
+                 animate={{ scale: 1, opacity: 1 }}
+                 className="bg-slate-900 border border-white/5 p-10 rounded-[3rem] shadow-2xl w-full max-w-[300px]"
+               >
+                 <h2 className="text-5xl font-black text-white mb-8 italic uppercase tracking-tighter">已 暂 停</h2>
+                 <button 
+                   onClick={togglePause}
+                   className="w-full py-5 bg-blue-600 text-white font-black text-xl rounded-[2rem] shadow-[0_10px_30px_-5px_rgba(59,130,246,0.5)] transition-all active:scale-95 flex items-center justify-center gap-3 border-b-4 border-blue-800"
+                 >
+                   <Play size={24} fill="white" /> 继 续
+                 </button>
+               </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Menu Screen - True Portrait Layout */}
         <AnimatePresence>
           {gameState.status === GameStatus.MENU && (
@@ -537,13 +684,28 @@ export default function App() {
                    </p>
                </div>
                
-               <div className="relative z-10 w-full flex flex-col items-center gap-6">
-                   <button 
-                     onClick={startGame}
-                     className="w-full py-6 bg-blue-600 hover:bg-blue-500 text-white font-black text-2xl rounded-[2.5rem] shadow-[0_20px_50px_-10px_rgba(59,130,246,0.5)] transition-all active:scale-95 active:shadow-inner flex items-center justify-center gap-3 border-b-4 border-blue-800"
-                   >
-                     <Play size={28} className="fill-white" /> 进 入 战 场
-                   </button>
+                   <div className="relative z-10 w-full flex flex-col items-center gap-4">
+                       <button 
+                         onClick={startGame}
+                         className="w-full py-5 bg-blue-600 hover:bg-blue-500 text-white font-black text-2xl rounded-[2.5rem] shadow-[0_20px_50px_-10px_rgba(59,130,246,0.5)] transition-all active:scale-95 active:shadow-inner flex items-center justify-center gap-3 border-b-4 border-blue-800"
+                       >
+                         <Play size={28} className="fill-white" /> 单 人 游 玩
+                       </button>
+
+                       <button 
+                         onClick={startMultiplayer}
+                         className="w-full py-4 bg-slate-800 hover:bg-slate-700 text-white font-black text-xl rounded-[2.5rem] shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 border-b-4 border-slate-950"
+                       >
+                         <Target size={24} className="text-emerald-400" /> 多 人 联 机
+                       </button>
+
+                       <button 
+                         onClick={handleShare}
+                         className="w-full py-3 bg-slate-900 border border-white/10 text-slate-400 font-bold text-sm rounded-[2rem] transition-all active:scale-95 flex items-center justify-center gap-2"
+                       >
+                         {copied ? <Check size={16} className="text-emerald-500" /> : <Share2 size={16} />}
+                         {copied ? '已复制链接' : '分享链接给好友'}
+                       </button>
                    
                    <div className="flex gap-8 text-slate-500 py-4">
                       <div className="flex flex-col items-center gap-2">

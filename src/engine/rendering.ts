@@ -75,6 +75,26 @@ export const drawGame = (ctx: CanvasRenderingContext2D, state: GameState, shake:
 
   // Player
   const { player } = state;
+
+  // Other Players
+  Object.entries(state.players).forEach(([id, otherPlayer]) => {
+    // Only draw if it's not the local player
+    if (otherPlayer.id === player.id) return;
+
+    if (!otherPlayer.pos) return; // Prevent crash if pos is missing
+
+    ctx.save();
+    ctx.fillStyle = '#10b981'; // Emerald for partners
+    ctx.beginPath();
+    ctx.arc(otherPlayer.pos.x, otherPlayer.pos.y, otherPlayer.radius || 8, 0, Math.PI * 2);
+    ctx.fill();
+    
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(otherPlayer.pos.x, otherPlayer.pos.y, (otherPlayer.radius || 8) * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  });
   const isInvincible = state.gameTime < player.invincibleUntil;
   ctx.save();
   if (isInvincible && Math.floor(state.gameTime / 50) % 2 === 0) {
