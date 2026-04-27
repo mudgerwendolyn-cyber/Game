@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/// <reference types="vite/client" />
 import OpenAI from 'openai';
 import { Hero, Monster, Skill, SkillType, BossAbility } from "../types";
 
