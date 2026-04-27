@@ -9,6 +9,23 @@
     <title>My Google AI Studio App</title>
   </head>
   <body>
+    <div id="error-log" style="color: red; font-size: 12px; position: fixed; z-index: 9999; top: 0; left: 0; background: rgba(0,0,0,0.8); padding: 10px; display: none; max-height: 50vh; overflow: auto;"></div>
+    <script>
+      window.onerror = function(message, source, lineno, colno, error) {
+        var el = document.getElementById('error-log');
+        if (el) {
+          el.style.display = 'block';
+          el.innerHTML += '<p>' + message + ' at ' + source + ':' + lineno + ':' + colno + '</p>';
+        }
+      };
+      window.addEventListener('unhandledrejection', function(event) {
+         var el = document.getElementById('error-log');
+         if (el) {
+          el.style.display = 'block';
+          el.innerHTML += '<p>Unhandled Promise: ' + (event.reason && event.reason.message || event.reason) + '</p>';
+         }
+      });
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
