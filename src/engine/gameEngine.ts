@@ -198,7 +198,7 @@ export const updateJuice = (state: GameState) => {
   }
 };
 
-export const updateEnemies = (state: GameState, onShake: (amt: number) => void) => {
+export const updateEnemies = (state: GameState, onShake: (amt: number) => void, onHit?: () => void) => {
   const { player, enemies, gameTime } = state;
   
   enemies.forEach(enemy => {
@@ -241,6 +241,7 @@ export const updateEnemies = (state: GameState, onShake: (amt: number) => void) 
         player.hp -= enemy.damage;
         player.invincibleUntil = gameTime + 1000;
         onShake(15);
+        onHit?.();
         if (navigator.vibrate) navigator.vibrate(20);
       } else {
         // Pushing player slightly or sliding away
@@ -257,53 +258,182 @@ export const autoFire = (state: GameState, onShoot?: () => void) => {
   if (enemies.length === 0) return;
 
   weapons.forEach(weapon => {
-    // Add ±10% random rhythm
-    const jitter = (Math.random() * 0.2 - 0.1); 
+    // 1. Always look for target for smooth rotation
+    let targetEnemy: Enemy | null = null;
+    let minVal = Infinity;
+
+    enemies.forEach(enemy => {
+      const dist = getDistance(player.pos, enemy.pos);
+      if (dist < weapon.range) {
+        const score = dist * 0.8 + (enemy.hp / enemy.maxHp) * dist * 0.2;
+        if (score < minVal) {
+          minVal = score;
+          targetEnemy = enemy;
+        }
+      }
+    });
+
+    if (targetEnemy) {
+        const bulletSpeed = weapon.projectileSpeed || 5;
+        const dist = getDistance(player.pos, targetEnemy.pos);
+        const timeToTarget = dist / bulletSpeed;
+        const targetVel = targetEnemy.currentDir ? 
+          { x: targetEnemy.currentDir.x * targetEnemy.speed, y: targetEnemy.currentDir.y * targetEnemy.speed } : 
+          { x: 0, y: 0 };
+          
+        const predictedPos = {
+          x: targetEnemy.pos.x + targetVel.x * timeToTarget * 0.5,
+          y: targetEnemy.pos.y + targetVel.y * timeToTarget * 0.5
+        };
+        const targetAngle = getAngle(player.pos, predictedPos);
+        
+        if (weapon.currentAngle === undefined) weapon.currentAngle = targetAngle;
+        let diff = targetAngle - weapon.currentAngle;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        weapon.currentAngle += diff * 0.15; // Slower rotation when just tracking
+    }
+
+    // 2. Fire if ready
+    const jitter = (Math.random() * 0.1 - 0.05); 
     const finalCooldown = (weapon.cooldown / player.attackSpeed) * (1 + jitter);
 
-    if (gameTime - weapon.lastFired >= finalCooldown) {
-      let targetEnemy: Enemy | null = null;
-      let minHP = Infinity;
+    if (gameTime - weapon.lastFired >= finalCooldown && targetEnemy) {
+      weapon.lastFired = gameTime;
+      onShoot?.();
+      
+      const shootingAngle = weapon.currentAngle || 0;
+      const count = player.multiShot;
+      const spread = 0.15;
 
-      enemies.forEach(enemy => {
-        const dist = getDistance(player.pos, enemy.pos);
-        if (dist < weapon.range) {
-          if (enemy.hp < minHP) {
-            minHP = enemy.hp;
-            targetEnemy = enemy;
-          }
-        }
-      });
-
-      if (targetEnemy) {
-        weapon.lastFired = gameTime;
-        onShoot?.();
-        const target = targetEnemy as Enemy;
-        const baseAngle = getAngle(player.pos, target.pos);
-        
-        const count = player.multiShot;
-        const spread = 0.2; // Radians between bullets
-
-        for(let i = 0; i < count; i++) {
-            const angle = baseAngle + (i - (count - 1) / 2) * spread;
-            
-            projectiles.push({
-               id: Math.random().toString(),
-               pos: { ...player.pos },
-               radius: 4,
-               velocity: { 
-                 x: Math.cos(angle) * (weapon.projectileSpeed || 5), 
-                 y: Math.sin(angle) * (weapon.projectileSpeed || 5) 
-               },
-               damage: weapon.damage * player.attackPower,
-               color: weapon.color,
-               distanceTraveled: 0,
-               maxDistance: weapon.range,
-               ownerId: 'player',
-               pierceRemaining: player.pierce
-            });
-        }
+      for(let i = 0; i < count; i++) {
+          const randomInaccuracy = (Math.random() * 0.04 - 0.02);
+          const angle = shootingAngle + (i - (count - 1) / 2) * spread + randomInaccuracy;
+          
+          projectiles.push({
+             id: Math.random().toString(),
+             pos: { ...player.pos },
+             radius: 4,
+             velocity: { 
+               x: Math.cos(angle) * (weapon.projectileSpeed || 5), 
+               y: Math.sin(angle) * (weapon.projectileSpeed || 5) 
+             },
+             damage: weapon.damage * player.attackPower,
+             color: weapon.color,
+             distanceTraveled: 0,
+             maxDistance: weapon.range * 1.2,
+             ownerId: 'player',
+             pierceRemaining: player.pierce
+          });
       }
     }
   });
+};
+
+export const updateProjectiles = (state: GameState, deltaTime: number, audio: any, setShake: (amt: any) => void) => {
+  const { projectiles, enemies, player } = state;
+
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    
+    // --- Homing Logic (Commercial grade: light homing) ---
+    let nearest: Enemy | null = null;
+    let minDist = 150; // Homing range
+    enemies.forEach(e => {
+        const d = getDistance(p.pos, e.pos);
+        if (d < minDist) {
+            minDist = d;
+            nearest = e;
+        }
+    });
+
+    if (nearest) {
+        const targetAngle = getAngle(p.pos, nearest.pos);
+        const pAngle = Math.atan2(p.velocity.y, p.velocity.x);
+        
+        // Slightly rotate velocity towards target
+        const turnSpeed = 0.04; 
+        const speed = Math.sqrt(p.velocity.x**2 + p.velocity.y**2);
+        
+        // Interpolate angle
+        let diff = targetAngle - pAngle;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        
+        const newAngle = pAngle + diff * turnSpeed;
+        p.velocity.x = Math.cos(newAngle) * speed;
+        p.velocity.y = Math.sin(newAngle) * speed;
+    }
+
+    p.pos.x += p.velocity.x;
+    p.pos.y += p.velocity.y;
+    p.distanceTraveled += Math.sqrt(p.velocity.x ** 2 + p.velocity.y ** 2);
+
+    let pRemoved = false;
+    for (let j = enemies.length - 1; j >= 0; j--) {
+      const e = enemies[j];
+      if (getDistance(p.pos, e.pos) < p.radius + e.radius) {
+        audio.playSFX('hit', 0.05);
+        const isCrit = Math.random() < player.critRate;
+        let dmg = p.damage * (isCrit ? player.critDamage : 1);
+        e.hp -= dmg;
+        e.hitFlashUntil = state.gameTime + 80;
+        
+        // Knockback (enhanced)
+        const angle = Math.atan2(e.pos.y - p.pos.y, e.pos.x - p.pos.x);
+        const kbForce = 5 * (1 + player.knockback);
+        e.pos.x += Math.cos(angle) * kbForce;
+        e.pos.y += Math.sin(angle) * kbForce;
+
+        // Feedback
+        spawnParticle(state, e.pos, '#fff', 2);
+        spawnDamageNumber(state, e.pos, dmg, isCrit);
+
+        // Lifesteal
+        if (player.lifesteal > 0) {
+            player.hp = Math.min(player.maxHp, player.hp + dmg * player.lifesteal);
+        }
+
+        if (e.hp <= 0) {
+            audio.playSFX('kill');
+            state.score += e.isElite ? 500 : 100;
+            player.killCount += 1;
+            
+            // Bomber explosion
+            if (e.isBomber) {
+                const distToPlayer = getDistance(e.pos, player.pos);
+                const explosionRadius = 60;
+                if (distToPlayer < explosionRadius + player.radius) {
+                    player.hp -= e.damage;
+                    setShake(15);
+                }
+                spawnParticle(state, e.pos, '#facc15', 20); 
+            }
+
+            state.xpGems.push({ 
+                id: Math.random().toString(), 
+                pos: { ...e.pos }, 
+                radius: e.isElite ? 8 : 4, 
+                value: e.xpValue || 1 
+            });
+            spawnParticle(state, e.pos, e.color, 12);
+            setShake(e.isElite ? 12 : 5); // Stronger shake
+            if (navigator.vibrate) navigator.vibrate(10);
+            enemies.splice(j, 1);
+        }
+
+        if (p.pierceRemaining > 0) {
+            p.pierceRemaining -= 1;
+        } else {
+            projectiles.splice(i, 1);
+            pRemoved = true;
+            break;
+        }
+      }
+    }
+
+    if (!pRemoved && p.distanceTraveled > p.maxDistance) {
+      projectiles.splice(i, 1);
+    }
+  }
 };

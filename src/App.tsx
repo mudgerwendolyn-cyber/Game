@@ -46,6 +46,7 @@ import {
   updatePlayer, 
   updateEnemies, 
   autoFire, 
+  updateProjectiles,
   getDistance,
   spawnParticle,
   spawnDamageNumber,
@@ -183,7 +184,6 @@ export default function App() {
         gameStateRef.current = newState;
         setGameState({ ...newState });
         lastTimeRef.current = 0;
-        audio.playBGM();
         audio.playSFX('click');
     } catch (e) {
         console.error('Failed to load game', e);
@@ -216,7 +216,8 @@ export default function App() {
 
   useEffect(() => {
     const startAudio = () => {
-      audio.playBGM();
+      // Play a short silent/UI sound to unlock audio context for mobile
+      audio.playSFX('click');
       window.removeEventListener('click', startAudio);
       window.removeEventListener('touchstart', startAudio);
     };
@@ -230,7 +231,7 @@ export default function App() {
 
   useEffect(() => {
     socketRef.current = io({
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'],
       autoConnect: true,
       reconnectionAttempts: 5
     });
@@ -257,8 +258,18 @@ export default function App() {
 
     if (!socketRef.current?.connected) {
       setIsConnecting(true);
+      const timeout = setTimeout(() => {
+        setIsConnecting(false);
+        setErrorStatus('连接超时。如无法连接，请尝试切换网络或开启网页加速工具。');
+        setIsMultiplayer(false);
+        gameStateRef.current.status = GameStatus.MENU;
+        setGameState({ ...gameStateRef.current });
+        setTimeout(() => setErrorStatus(null), 5000);
+      }, 8000);
+
       socketRef.current?.connect();
       socketRef.current?.once('connect', () => {
+        clearTimeout(timeout);
         socketRef.current?.emit('create_room');
         setIsConnecting(false);
       });
@@ -278,8 +289,18 @@ export default function App() {
 
     if (!socketRef.current?.connected) {
       setIsConnecting(true);
+      const timeout = setTimeout(() => {
+        setIsConnecting(false);
+        setErrorStatus('连接超时。部分地区可能需要开启加速工具以使用联机功能。');
+        setIsMultiplayer(false);
+        gameStateRef.current.status = GameStatus.MENU;
+        setGameState({ ...gameStateRef.current });
+        setTimeout(() => setErrorStatus(null), 5000);
+      }, 8000);
+
       socketRef.current?.connect();
       socketRef.current?.once('connect', () => {
+        clearTimeout(timeout);
         socketRef.current?.emit('join_room', cleanId);
         setIsConnecting(false);
       });
@@ -301,7 +322,7 @@ export default function App() {
     
     // Re-init socket for next potential game
     socketRef.current = io({
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'],
       autoConnect: true,
       reconnectionAttempts: 5
     });
@@ -334,6 +355,15 @@ export default function App() {
       gameStateRef.current.status = GameStatus.MENU;
       setGameState({ ...gameStateRef.current });
       setTimeout(() => setErrorStatus(null), 3000);
+    });
+
+    s.on('connect_error', () => {
+      setErrorStatus('无法连接到服务器。部分地区（如中国大陆）可能需要辅助工具才能使用多人功能。');
+      setIsConnecting(false);
+      setIsMultiplayer(false);
+      gameStateRef.current.status = GameStatus.MENU;
+      setGameState({ ...gameStateRef.current });
+      setTimeout(() => setErrorStatus(null), 5000);
     });
 
     s.on('game_started', () => {
@@ -464,7 +494,6 @@ export default function App() {
 
   const onStart = () => {
     audio.playSFX('click');
-    audio.playBGM();
     startGame();
   };
 
@@ -503,85 +532,13 @@ export default function App() {
       state.wave = Math.floor(state.gameTime / 30000) + 1;
 
       // 3. Enemy Update
-      updateEnemies(state, setShake);
+      updateEnemies(state, setShake, () => audio.playSFX('hit', 0.2));
 
       // 4. Combat / AutoFire
       autoFire(state, () => audio.playSFX('shoot', 0.1));
 
       // 5. Projectiles Update
-      for (let i = projectiles.length - 1; i >= 0; i--) {
-        const p = projectiles[i];
-        p.pos.x += p.velocity.x;
-        p.pos.y += p.velocity.y;
-        p.distanceTraveled += Math.sqrt(p.velocity.x ** 2 + p.velocity.y ** 2);
-
-        let pRemoved = false;
-        for (let j = enemies.length - 1; j >= 0; j--) {
-          const e = enemies[j];
-          if (getDistance(p.pos, e.pos) < p.radius + e.radius) {
-            audio.playSFX('hit', 0.05);
-            const isCrit = Math.random() < player.critRate;
-            let dmg = p.damage * (isCrit ? player.critDamage : 1);
-            e.hp -= dmg;
-            e.hitFlashUntil = state.gameTime + 80;
-            
-            // Knockback
-            const angle = Math.atan2(e.pos.y - p.pos.y, e.pos.x - p.pos.x);
-            const kbForce = 4 * (1 + player.knockback);
-            e.pos.x += Math.cos(angle) * kbForce;
-            e.pos.y += Math.sin(angle) * kbForce;
-
-            // Feedback
-            spawnParticle(state, e.pos, '#fff', 2);
-            spawnDamageNumber(state, e.pos, dmg, isCrit);
-
-            // Lifesteal
-            if (player.lifesteal > 0) {
-                player.hp = Math.min(player.maxHp, player.hp + dmg * player.lifesteal);
-            }
-
-              if (e.hp <= 0) {
-                audio.playSFX('kill');
-                state.score += e.isElite ? 500 : 100;
-                player.killCount += 1;
-                
-                // Bomber explosion
-                if (e.isBomber) {
-                    const distToPlayer = getDistance(e.pos, player.pos);
-                    const explosionRadius = 60;
-                    if (distToPlayer < explosionRadius + player.radius) {
-                        player.hp -= e.damage;
-                        setShake(15);
-                    }
-                    spawnParticle(state, e.pos, '#facc15', 20); // Yellow/Orange for explosion
-                }
-
-                state.xpGems.push({ 
-                    id: Math.random().toString(), 
-                    pos: { ...e.pos }, 
-                    radius: e.isElite ? 8 : 4, 
-                    value: e.xpValue || 1 
-                });
-              spawnParticle(state, e.pos, e.color, 12);
-              setShake(e.isElite ? 10 : 4);
-              if (navigator.vibrate) navigator.vibrate(10);
-              enemies.splice(j, 1);
-            }
-
-            if (p.pierceRemaining > 0) {
-                p.pierceRemaining -= 1;
-            } else {
-                projectiles.splice(i, 1);
-                pRemoved = true;
-                break;
-            }
-          }
-        }
-
-        if (!pRemoved && p.distanceTraveled > p.maxDistance) {
-          projectiles.splice(i, 1);
-        }
-      }
+      updateProjectiles(state, deltaTime, audio, setShake);
 
       // 6. Juice and XP
       updateJuice(state);
@@ -620,6 +577,9 @@ export default function App() {
 
       // 8. Game Over check
       if (player.hp <= 0) {
+        if (state.status !== GameStatus.GAME_OVER) {
+          audio.playSFX('gameOver');
+        }
         state.status = GameStatus.GAME_OVER;
       }
 

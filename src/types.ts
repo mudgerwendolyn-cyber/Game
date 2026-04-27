@@ -64,6 +64,7 @@ export interface Weapon {
   cooldown: number; // ms
   lastFired: number;
   range: number;
+  currentAngle?: number;
   projectileSpeed?: number;
   color: string;
 }
