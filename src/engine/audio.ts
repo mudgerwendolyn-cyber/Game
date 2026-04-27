@@ -8,8 +8,8 @@ class AudioManager {
   private readonly MAX_VOICES = 8;
   private bgm: HTMLAudioElement | null = null;
   private enabled: boolean = true;
-  private bmgVolume: number = 0.2;
-  private sfxVolume: number = 0.4;
+  private bmgVolume: number = 0.12;
+  private sfxVolume: number = 0.3;
 
   constructor() {
     this.preLoad();
@@ -43,7 +43,7 @@ class AudioManager {
     if (this.bgm) this.bgm.volume = bgm;
   }
 
-  playBGM(url: string = 'https://assets.mixkit.co/music/preview/mixkit-games-world-614.mp3') {
+  playBGM(url: string = 'https://assets.mixkit.co/music/preview/mixkit-retro-arcade-casino-573.mp3') {
     if (!this.enabled) return;
     if (this.bgm) {
       if (this.bgm.src === url) return;
@@ -65,7 +65,13 @@ class AudioManager {
       const voice = this.voicePool.find(v => v.paused || v.ended);
       if (voice) {
           voice.src = original.src;
-          voice.volume = this.sfxVolume;
+          
+          // Custom volume for specific sounds
+          let vol = this.sfxVolume;
+          if (name === 'gem') vol *= 0.4; // Reduce pickup volume
+          if (name === 'shoot') vol *= 0.7; // Slightly reduce shoot volume
+          
+          voice.volume = vol;
           voice.playbackRate = 1 + (Math.random() * pitchVar * 2 - pitchVar);
           voice.play().catch(() => {});
       }

@@ -215,6 +215,20 @@ export default function App() {
   }, [saveGame]);
 
   useEffect(() => {
+    const startAudio = () => {
+      audio.playBGM();
+      window.removeEventListener('click', startAudio);
+      window.removeEventListener('touchstart', startAudio);
+    };
+    window.addEventListener('click', startAudio);
+    window.addEventListener('touchstart', startAudio);
+    return () => {
+      window.removeEventListener('click', startAudio);
+      window.removeEventListener('touchstart', startAudio);
+    };
+  }, []);
+
+  useEffect(() => {
     socketRef.current = io({
       transports: ['websocket', 'polling'],
       autoConnect: true,
@@ -235,6 +249,12 @@ export default function App() {
   }, []);
 
   const createRoom = () => {
+    setIsMultiplayer(true);
+    setIsHost(true);
+    setRoomUsers(1);
+    gameStateRef.current.status = GameStatus.LOBBY;
+    setGameState({ ...gameStateRef.current });
+
     if (!socketRef.current?.connected) {
       setIsConnecting(true);
       socketRef.current?.connect();
@@ -245,17 +265,16 @@ export default function App() {
     } else {
       socketRef.current.emit('create_room');
     }
-    
-    setIsMultiplayer(true);
-    setIsHost(true);
-    setRoomUsers(1);
-    gameStateRef.current.status = GameStatus.LOBBY;
-    setGameState({ ...gameStateRef.current });
   };
 
   const joinExistingRoom = (id: string) => {
     const cleanId = id.trim().toUpperCase();
     if (!cleanId) return;
+
+    setIsMultiplayer(true);
+    setIsHost(false);
+    gameStateRef.current.status = GameStatus.LOBBY;
+    setGameState({ ...gameStateRef.current });
 
     if (!socketRef.current?.connected) {
       setIsConnecting(true);
@@ -267,11 +286,6 @@ export default function App() {
     } else {
       socketRef.current.emit('join_room', cleanId);
     }
-
-    setIsMultiplayer(true);
-    setIsHost(false);
-    gameStateRef.current.status = GameStatus.LOBBY;
-    setGameState({ ...gameStateRef.current });
   };
 
   const leaveRoom = () => {

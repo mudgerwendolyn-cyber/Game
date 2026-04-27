@@ -262,21 +262,23 @@ export const autoFire = (state: GameState, onShoot?: () => void) => {
     const finalCooldown = (weapon.cooldown / player.attackSpeed) * (1 + jitter);
 
     if (gameTime - weapon.lastFired >= finalCooldown) {
-      let nearest: Enemy | null = null;
-      let minDist = weapon.range;
+      let targetEnemy: Enemy | null = null;
+      let minHP = Infinity;
 
       enemies.forEach(enemy => {
         const dist = getDistance(player.pos, enemy.pos);
-        if (dist < minDist) {
-          minDist = dist;
-          nearest = enemy;
+        if (dist < weapon.range) {
+          if (enemy.hp < minHP) {
+            minHP = enemy.hp;
+            targetEnemy = enemy;
+          }
         }
       });
 
-      if (nearest) {
+      if (targetEnemy) {
         weapon.lastFired = gameTime;
         onShoot?.();
-        const target = nearest as Enemy;
+        const target = targetEnemy as Enemy;
         const baseAngle = getAngle(player.pos, target.pos);
         
         const count = player.multiShot;
