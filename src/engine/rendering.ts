@@ -19,67 +19,138 @@ export const drawGame = (ctx: CanvasRenderingContext2D, state: GameState, shake:
   ctx.fillStyle = '#0f172a';
   ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
-  // Grid background
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
-  ctx.lineWidth = 1;
-  const gridSize = 40;
-  for (let x = 0; x < GAME_WIDTH; x += gridSize) {
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, GAME_HEIGHT); ctx.stroke();
-  }
-  for (let y = 0; y < GAME_HEIGHT; y += gridSize) {
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(GAME_WIDTH, y); ctx.stroke();
+  // Parallax Stars/Dust (Background Layer)
+  const time = state.gameTime * 0.001;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+  for (let i = 0; i < 50; i++) {
+      const x = (Math.sin(i * 123.45) + 1) * 0.5 * GAME_WIDTH;
+      const y = ((Math.cos(i * 678.90) + 1) * 0.5 * GAME_HEIGHT + time * 10 * (1 + (i % 3))) % GAME_HEIGHT;
+      ctx.beginPath();
+      ctx.arc(x, y, 1, 0, Math.PI * 2);
+      ctx.fill();
   }
 
-  // XP Gems
+  // Grid background (Middle Layer)
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.06)';
+  ctx.lineWidth = 1;
+  const gridSize = 60;
+  ctx.beginPath();
+  for (let x = 0; x < GAME_WIDTH; x += gridSize) {
+    ctx.moveTo(x, 0); ctx.lineTo(x, GAME_HEIGHT);
+  }
+  for (let y = 0; y < GAME_HEIGHT; y += gridSize) {
+    ctx.moveTo(0, y); ctx.lineTo(GAME_WIDTH, y);
+  }
+  ctx.stroke();
+
+  // XP Gems with better glow
   state.xpGems.forEach(gem => {
-    ctx.fillStyle = '#8b5cf6';
+    ctx.save();
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = '#8b5cf6';
+    ctx.fillStyle = '#a78bfa';
     ctx.beginPath();
     ctx.arc(gem.pos.x, gem.pos.y, gem.radius, 0, Math.PI * 2);
     ctx.fill();
-    // Glow
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = '#8b5cf6';
+    
+    // Inner pulse
+    const pulse = 0.8 + Math.sin(state.gameTime * 0.01) * 0.2;
+    ctx.fillStyle = '#ffffff';
+    ctx.globalAlpha = 0.5;
+    ctx.beginPath();
+    ctx.arc(gem.pos.x, gem.pos.y, gem.radius * pulse * 0.6, 0, Math.PI * 2);
     ctx.fill();
-    ctx.shadowBlur = 0;
+    ctx.restore();
   });
 
-  // Projectiles
+  // Projectiles with glow and trails
   state.projectiles.forEach(p => {
-    ctx.fillStyle = p.color;
+    ctx.save();
+    ctx.shadowBlur = 8;
+    ctx.shadowColor = p.color;
+    ctx.fillStyle = '#ffffff'; // Bullet core
     ctx.beginPath();
-    ctx.arc(p.pos.x, p.pos.y, p.radius, 0, Math.PI * 2);
+    ctx.arc(p.pos.x, p.pos.y, p.radius * 0.8, 0, Math.PI * 2);
     ctx.fill();
     
-    // Simple motion trail
+    // Glow ring
     ctx.strokeStyle = p.color;
     ctx.lineWidth = 2;
-    ctx.globalAlpha = 0.3;
+    ctx.stroke();
+    
+    // Motion trail (Dynamic)
+    const trailLen = 4;
+    const gradient = ctx.createLinearGradient(
+        p.pos.x, p.pos.y, 
+        p.pos.x - p.velocity.x * trailLen, p.pos.y - p.velocity.y * trailLen
+    );
+    gradient.addColorStop(0, p.color);
+    gradient.addColorStop(1, 'transparent');
+    ctx.strokeStyle = gradient;
+    ctx.lineWidth = p.radius * 1.5;
+    ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.moveTo(p.pos.x, p.pos.y);
-    ctx.lineTo(p.pos.x - p.velocity.x * 2, p.pos.y - p.velocity.y * 2);
+    ctx.lineTo(p.pos.x - p.velocity.x * trailLen, p.pos.y - p.velocity.y * trailLen);
     ctx.stroke();
-    ctx.globalAlpha = 1.0;
+    ctx.restore();
   });
 
   // Particles
   state.particles.forEach(p => {
-    const alpha = 1 - (p.life / p.maxLife);
+    const age = p.life / p.maxLife;
+    const alpha = 1 - age;
     ctx.globalAlpha = alpha;
     ctx.fillStyle = p.color;
+    // Stretch based on velocity
+    ctx.save();
+    ctx.translate(p.pos.x, p.pos.y);
+    const speed = Math.sqrt(p.vel.x**2 + p.vel.y**2);
+    const angle = Math.atan2(p.vel.y, p.vel.x);
+    ctx.rotate(angle);
     ctx.beginPath();
-    ctx.arc(p.pos.x, p.pos.y, p.size, 0, Math.PI * 2);
+    ctx.ellipse(0, 0, p.size * (1 + speed * 0.5), p.size, 0, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
   });
   ctx.globalAlpha = 1.0;
 
   // Enemies
   state.enemies.forEach(enemy => {
     const isFlashing = state.gameTime < enemy.hitFlashUntil;
-    ctx.fillStyle = isFlashing ? '#ffffff' : enemy.color;
+    ctx.save();
     
+    if (isFlashing) {
+      ctx.shadowBlur = 20;
+      ctx.shadowColor = '#ffffff';
+      ctx.fillStyle = '#ffffff';
+    } else {
+      ctx.fillStyle = enemy.color;
+    }
+    
+    // Creature body
     ctx.beginPath();
     ctx.arc(enemy.pos.x, enemy.pos.y, enemy.radius, 0, Math.PI * 2);
     ctx.fill();
+
+    // Eyes or accents for higher level feel
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    const eyeSize = enemy.radius * 0.2;
+    ctx.beginPath();
+    ctx.arc(enemy.pos.x - enemy.radius*0.3, enemy.pos.y - enemy.radius*0.2, eyeSize, 0, Math.PI*2);
+    ctx.arc(enemy.pos.x + enemy.radius*0.3, enemy.pos.y - enemy.radius*0.2, eyeSize, 0, Math.PI*2);
+    ctx.fill();
+
+    // Elite indicator
+    if (enemy.isElite) {
+        ctx.strokeStyle = '#fbbf24';
+        ctx.lineWidth = 3;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.arc(enemy.pos.x, enemy.pos.y, enemy.radius + 6, state.gameTime * 0.01, state.gameTime * 0.01 + Math.PI * 1.5);
+        ctx.stroke();
+    }
+    ctx.restore();
 
     // HP Bar for Elites
     if (enemy.isElite || enemy.hp < enemy.maxHp) {

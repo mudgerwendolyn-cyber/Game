@@ -6,15 +6,15 @@ export const GAME_WIDTH = 450;
 export const GAME_HEIGHT = 800;
 
 export const INITIAL_PLAYER_STATS = {
-  hp: 80,
-  maxHp: 80,
+  hp: 100,
+  maxHp: 100,
   speed: 2.2,
   xp: 0,
   level: 1,
   maxXp: 15,
-  attackPower: 0.8, // Used as multiplier
+  attackPower: 0.85, // Slightly buffed from 0.8
   attackSpeed: 0.8,
-  critRate: 0.03,
+  critRate: 0.05, // Slightly buffed from 0.03
   critDamage: 1.5,
   lifesteal: 0,
   pierce: 0,
@@ -65,7 +65,7 @@ export const WEAPON_TYPES = {
 export const ENEMY_TEMPLATES = {
   BASIC: {
     hp: 35,
-    speed: 1.6,
+    speed: 1.4, // Differentiated (was 1.6)
     damage: 6,
     radius: 12,
     color: '#ef4444',
@@ -73,7 +73,7 @@ export const ENEMY_TEMPLATES = {
   },
   FAST: {
     hp: 25,
-    speed: 3.2,
+    speed: 3.5, // Differentiated (was 3.2)
     damage: 5,
     radius: 9,
     color: '#f97316',
@@ -81,7 +81,7 @@ export const ENEMY_TEMPLATES = {
   },
   TANK: {
     hp: 120,
-    speed: 1.0,
+    speed: 0.8, // Differentiated (was 1.0)
     damage: 10,
     radius: 18,
     color: '#94a3b8',
@@ -89,7 +89,7 @@ export const ENEMY_TEMPLATES = {
   },
   ELITE: {
     hp: 220,
-    speed: 1.4,
+    speed: 1.2, // Differentiated (was 1.4)
     damage: 18,
     radius: 20,
     color: '#fbbf24',
@@ -97,7 +97,7 @@ export const ENEMY_TEMPLATES = {
   },
   BOMBER: {
     hp: 40,
-    speed: 1.8,
+    speed: 2.0, // Differentiated (was 1.8)
     damage: 12,
     radius: 14,
     color: '#a855f7',

@@ -50,6 +50,7 @@ import {
   updateJuice
 } from './engine/gameEngine';
 import { drawGame } from './engine/rendering';
+import { audio } from './engine/audio';
 
 const INITIAL_STATE: GameState = {
   status: GameStatus.MENU,
@@ -143,48 +144,126 @@ export default function App() {
   const [isHost, setIsHost] = useState(false);
   const [errorStatus, setErrorStatus] = useState<string | null>(null);
   const [joinId, setJoinId] = useState('');
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [hasSavedGame, setHasSavedGame] = useState(false);
+
+  // Persistence logic
+  const saveGame = useCallback(() => {
+    const state = gameStateRef.current;
+    if (state.status === GameStatus.MENU || state.status === GameStatus.GAME_OVER) return;
+    if (isMultiplayer) return; // Don't save multiplayer state locally
+
+    const saveData = {
+        player: state.player,
+        weapons: state.weapons,
+        wave: state.wave,
+        score: state.score,
+        gameTime: state.gameTime,
+        xpGems: state.xpGems, // Maybe too many? Let's save gems too
+        enemies: state.enemies.map(e => ({...e, currentDir: null})) // CurrentDir might have complex state
+    };
+    localStorage.setItem('coreblast_save', JSON.stringify(saveData));
+    setHasSavedGame(true);
+  }, [isMultiplayer]);
+
+  const loadGame = () => {
+    const saved = localStorage.getItem('coreblast_save');
+    if (!saved) return;
+    try {
+        const data = JSON.parse(saved);
+        if (data.player.hp <= 0) return;
+
+        const newState: GameState = {
+            ...INITIAL_STATE,
+            ...data,
+            status: GameStatus.PLAYING
+        };
+        gameStateRef.current = newState;
+        setGameState({ ...newState });
+        lastTimeRef.current = 0;
+        audio.playBGM();
+        audio.playSFX('click');
+    } catch (e) {
+        console.error('Failed to load game', e);
+    }
+  };
 
   useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const roomFromUrl = urlParams.get('room');
-    if (roomFromUrl) {
-      joinExistingRoom(roomFromUrl);
+    const saved = localStorage.getItem('coreblast_save');
+    if (saved) {
+        try {
+            const data = JSON.parse(saved);
+            if (data.player.hp > 0) setHasSavedGame(true);
+        } catch(e) {}
     }
   }, []);
 
-  const createRoom = () => {
-    setIsMultiplayer(true);
-    setIsHost(true);
-    gameStateRef.current.status = GameStatus.LOBBY;
-    setGameState({ ...gameStateRef.current });
+  // Periodic Auto-Save
+  useEffect(() => {
+    const interval = setInterval(() => {
+        saveGame();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [saveGame]);
 
-    if (!socketRef.current) {
-      socketRef.current = io();
-      setupSocketListeners();
-      socketRef.current.on('connect', () => {
+  useEffect(() => {
+    socketRef.current = io({
+      transports: ['websocket', 'polling'],
+      autoConnect: true,
+      reconnectionAttempts: 5
+    });
+    setupSocketListeners();
+    
+    // Check URL params after setup
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomFromUrl = urlParams.get('room');
+    if (roomFromUrl) {
+      setTimeout(() => joinExistingRoom(roomFromUrl), 500); // Small delay to ensure socket readiness
+    }
+
+    return () => {
+      socketRef.current?.disconnect();
+    };
+  }, []);
+
+  const createRoom = () => {
+    if (!socketRef.current?.connected) {
+      setIsConnecting(true);
+      socketRef.current?.connect();
+      socketRef.current?.once('connect', () => {
         socketRef.current?.emit('create_room');
+        setIsConnecting(false);
       });
     } else {
       socketRef.current.emit('create_room');
     }
+    
+    setIsMultiplayer(true);
+    setIsHost(true);
+    gameStateRef.current.status = GameStatus.LOBBY;
+    setGameState({ ...gameStateRef.current });
   };
 
   const joinExistingRoom = (id: string) => {
-    setIsMultiplayer(true);
-    setIsHost(false);
-    setRoomId(id);
-    gameStateRef.current.status = GameStatus.LOBBY;
-    setGameState({ ...gameStateRef.current });
+    const cleanId = id.trim().toUpperCase();
+    if (!cleanId) return;
 
-    if (!socketRef.current) {
-      socketRef.current = io();
-      setupSocketListeners();
-      socketRef.current.on('connect', () => {
-        socketRef.current?.emit('join_room', id);
+    if (!socketRef.current?.connected) {
+      setIsConnecting(true);
+      socketRef.current?.connect();
+      socketRef.current?.once('connect', () => {
+        socketRef.current?.emit('join_room', cleanId);
+        setIsConnecting(false);
       });
     } else {
-      socketRef.current.emit('join_room', id);
+      socketRef.current.emit('join_room', cleanId);
     }
+
+    setIsMultiplayer(true);
+    setIsHost(false);
+    setRoomId(cleanId);
+    gameStateRef.current.status = GameStatus.LOBBY;
+    setGameState({ ...gameStateRef.current });
   };
 
   const setupSocketListeners = () => {
@@ -196,13 +275,15 @@ export default function App() {
       window.history.replaceState({}, '', `?room=${id}`);
     });
 
-    s.on('room_update', ({ members, roomId, host }) => {
+    s.on('room_update', ({ members, roomId: sRoomId, host }) => {
       setRoomUsers(members.length);
       setIsHost(s.id === host);
+      if (sRoomId) setRoomId(sRoomId); // Ensure local ID matches server
     });
 
     s.on('room_error', (msg) => {
       setErrorStatus(msg);
+      setRoomId(null); // Clear invalid room ID
       setTimeout(() => setErrorStatus(null), 3000);
     });
 
@@ -314,10 +395,17 @@ export default function App() {
   };
 
   const handleUpgrade = (upgrade: Upgrade) => {
+    audio.playSFX('upgrade');
     upgrade.apply(gameStateRef.current.player, gameStateRef.current.weapons);
     gameStateRef.current.status = GameStatus.PLAYING;
     lastTimeRef.current = performance.now();
     setGameState({ ...gameStateRef.current });
+  };
+
+  const onStart = () => {
+    audio.playSFX('click');
+    audio.playBGM();
+    startGame();
   };
 
   const update = useCallback((time: number) => {
@@ -358,7 +446,7 @@ export default function App() {
       updateEnemies(state, setShake);
 
       // 4. Combat / AutoFire
-      autoFire(state);
+      autoFire(state, () => audio.playSFX('shoot', 0.1));
 
       // 5. Projectiles Update
       for (let i = projectiles.length - 1; i >= 0; i--) {
@@ -371,6 +459,7 @@ export default function App() {
         for (let j = enemies.length - 1; j >= 0; j--) {
           const e = enemies[j];
           if (getDistance(p.pos, e.pos) < p.radius + e.radius) {
+            audio.playSFX('hit', 0.05);
             const isCrit = Math.random() < player.critRate;
             let dmg = p.damage * (isCrit ? player.critDamage : 1);
             e.hp -= dmg;
@@ -392,6 +481,7 @@ export default function App() {
             }
 
               if (e.hp <= 0) {
+                audio.playSFX('kill');
                 state.score += e.isElite ? 500 : 100;
                 player.killCount += 1;
                 
@@ -446,6 +536,7 @@ export default function App() {
             gem.pos.y += Math.sin(angle) * pullSpeed;
         }
         if (dist < player.radius + gem.radius) {
+            audio.playSFX('gem', 0.2);
             player.xp += gem.value;
             xpGems.splice(i, 1);
 
@@ -479,14 +570,61 @@ export default function App() {
     }
 
     // Render always with latest ref state
-    const ctx = canvasRef.current?.getContext('2d');
-    if (ctx) {
-      setShake(prev => Math.max(0, prev - 0.5));
-      drawGame(ctx, state, shake);
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        setShake(prev => Math.max(0, prev - 0.5));
+        drawGame(ctx, state, shake);
+      }
     }
     
     requestRef.current = requestAnimationFrame(update);
   }, [joystick, shake]);
+
+  useEffect(() => {
+    const handleTouchMoveGlobal = (e: TouchEvent) => {
+      if (!joystickCenter) return;
+      const touch = e.touches[0];
+      const container = containerRef.current;
+      if (!container) return;
+      
+      const rect = container.getBoundingClientRect();
+      const pos = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+      
+      // Dynamic follow logic
+      const dx = pos.x - joystickCenter.x;
+      const dy = pos.y - joystickCenter.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const limit = 50;
+      
+      if (dist > limit) {
+        const angle = Math.atan2(dy, dx);
+        setJoystickCenter({
+          x: pos.x - Math.cos(angle) * limit,
+          y: pos.y - Math.sin(angle) * limit
+        });
+      }
+      
+      handleJoystick(pos, joystickCenter);
+    };
+
+    const handleTouchEndGlobal = () => {
+      handleJoystick(null, null);
+    };
+
+    if (joystickCenter) {
+      window.addEventListener('touchmove', handleTouchMoveGlobal, { passive: false });
+      window.addEventListener('touchend', handleTouchEndGlobal);
+      window.addEventListener('touchcancel', handleTouchEndGlobal);
+    }
+
+    return () => {
+      window.removeEventListener('touchmove', handleTouchMoveGlobal);
+      window.removeEventListener('touchend', handleTouchEndGlobal);
+      window.removeEventListener('touchcancel', handleTouchEndGlobal);
+    };
+  }, [joystickCenter]);
 
   useEffect(() => {
     requestRef.current = requestAnimationFrame(update);
@@ -552,38 +690,13 @@ export default function App() {
         {/* Mobile Joystick Area - Dynamic 'Follow the Finger' */}
         {gameState.status === GameStatus.PLAYING && (
           <div 
-            className="absolute inset-x-0 bottom-0 top-1/3 z-50 touch-none pointer-events-auto"
+            className="absolute inset-0 z-50 touch-none pointer-events-auto"
             onTouchStart={(e) => {
               const touch = e.touches[0];
               const rect = e.currentTarget.getBoundingClientRect();
               const center = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
               setJoystickCenter(center);
               handleJoystick(center, center);
-            }}
-            onTouchMove={(e) => {
-              if (!joystickCenter) return;
-              const touch = e.touches[0];
-              const rect = e.currentTarget.getBoundingClientRect();
-              const pos = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
-              
-              // Dynamic follow logic
-              const dx = pos.x - joystickCenter.x;
-              const dy = pos.y - joystickCenter.y;
-              const dist = Math.sqrt(dx * dx + dy * dy);
-              const limit = 50;
-              
-              if (dist > limit) {
-                const angle = Math.atan2(dy, dx);
-                setJoystickCenter({
-                  x: pos.x - Math.cos(angle) * limit,
-                  y: pos.y - Math.sin(angle) * limit
-                });
-              }
-              
-              handleJoystick(pos, joystickCenter);
-            }}
-            onTouchEnd={() => {
-              handleJoystick(null, null);
             }}
           >
              <AnimatePresence>
@@ -614,9 +727,13 @@ export default function App() {
           </div>
         )}
 
-        {/* HUD - Portrait Optimized */}
-        {gameState.status !== GameStatus.MENU && (
-          <div className="absolute top-0 left-0 w-full p-4 pointer-events-none flex flex-col gap-3">
+      {/* HUD - Portrait Optimized */}
+      {(gameState.status === GameStatus.PLAYING || gameState.status === GameStatus.PAUSED || gameState.status === GameStatus.UPGRADING) && (
+        <motion.div 
+          initial={{ y: -50, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          className="absolute top-0 left-0 w-full p-4 pointer-events-none flex flex-col gap-3"
+        >
             {/* Top Bar: Timer & Wave */}
             <div className="flex justify-between items-center px-4 py-2 bg-slate-950/40 backdrop-blur-md rounded-2xl border border-white/5 shadow-lg">
                 <div className="flex flex-col">
@@ -668,7 +785,7 @@ export default function App() {
                     <span className="text-[10px] font-black text-slate-500 uppercase">Score: {gameState.score}</span>
                 </div>
             </div>
-          </div>
+          </motion.div>
         )}
 
         {/* Lobby Screen */}
@@ -865,41 +982,61 @@ export default function App() {
                   <div className="absolute inset-0 opacity-5" style={{ backgroundImage: 'linear-gradient(0deg, #ffffff 1px, transparent 1px), linear-gradient(90deg, #ffffff 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
                </div>
 
-               <div className="relative z-10 flex flex-col items-center">
-                   <motion.div
-                     animate={{ 
-                       rotate: [0, 5, -5, 0],
-                       scale: [1, 1.05, 1]
-                     }}
-                     transition={{ repeat: Infinity, duration: 4 }}
-                     className="text-8xl mb-6 filter drop-shadow-[0_0_20px_rgba(59,130,246,0.3)]"
-                   >
-                     🚀
-                   </motion.div>
-                   <h1 className="text-6xl font-[1000] text-white tracking-[-0.1em] mb-2 leading-none italic uppercase">
-                     Project<br/>
-                     <span className="text-blue-500 tracking-tighter">Bro</span>
-                   </h1>
-                   <p className="text-slate-500 font-bold max-w-[240px] text-xs uppercase tracking-widest leading-relaxed">
-                     Survivors.io Style<br/>
-                     Mobile Roguelike SHOOTER
-                   </p>
-               </div>
-               
-                   <div className="relative z-10 w-full flex flex-col items-center gap-4">
-                       <button 
-                         onClick={startGame}
-                         className="w-full py-5 bg-blue-600 hover:bg-blue-500 text-white font-black text-2xl rounded-[2.5rem] shadow-[0_20px_50px_-10px_rgba(59,130,246,0.5)] transition-all active:scale-95 active:shadow-inner flex items-center justify-center gap-3 border-b-4 border-blue-800"
-                       >
-                         <Play size={28} className="fill-white" /> 单 人 游 玩
-                       </button>
+                <div className="mb-2">
+                  <motion.div 
+                    animate={{ x: [0, 2, -2, 0] }}
+                    transition={{ repeat: Infinity, duration: 2 }}
+                    className="text-blue-500 font-black tracking-[0.4em] uppercase text-[10px]"
+                  >
+                    🚀 Galactic Survivors
+                  </motion.div>
+                </div>
+                <h1 className="text-7xl font-[1000] text-white italic tracking-tighter mb-8 drop-shadow-[0_10px_30px_rgba(59,130,246,0.3)]">
+                  CORE<span className="text-blue-500">BLAST</span>
+                </h1>
+                
+                <div className="flex flex-col gap-4 w-full max-w-[300px] mx-auto">
+                    <motion.button 
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.95 }}
+                      onClick={onStart}
+                      className="group relative py-6 bg-blue-600 text-white rounded-[2.5rem] font-black text-2xl transition-all shadow-[0_20px_40px_-5px_rgba(59,130,246,0.5)] border-b-8 border-blue-800 active:border-b-0 active:translate-y-2 flex items-center justify-center gap-3"
+                    >
+                      <Play size={32} className="fill-white" /> 开始挑战
+                    </motion.button>
 
-                       <button 
-                         onClick={startMultiplayer}
-                         className="w-full py-4 bg-slate-800 hover:bg-slate-700 text-white font-black text-xl rounded-[2.5rem] shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 border-b-4 border-slate-950"
-                       >
-                         <Target size={24} /> 创建多人房间
-                       </button>
+                    {hasSavedGame && (
+                      <motion.button 
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={loadGame}
+                        className="group relative py-5 bg-emerald-600 text-white rounded-[2.5rem] font-black text-xl transition-all shadow-[0_15px_30px_-5px_rgba(16,185,129,0.3)] border-b-8 border-emerald-800 active:border-b-0 active:translate-y-2 flex items-center justify-center gap-3"
+                      >
+                        <RotateCcw size={28} className="text-white" /> 继续游戏
+                      </motion.button>
+                    )}
+
+                    <div className="flex gap-3">
+                      <motion.button 
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={startMultiplayer}
+                        className="flex-1 py-4 bg-slate-900 border border-white/10 text-white rounded-3xl font-black text-sm flex items-center justify-center gap-2 transition-all active:scale-95"
+                      >
+                         多人对战
+                      </motion.button>
+                      <motion.button 
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={handleShare}
+                        className="p-4 bg-slate-900 border border-white/10 text-white rounded-3xl transition-all active:scale-95"
+                      >
+                        <Share2 size={24} />
+                      </motion.button>
+                    </div>
+                </div>
 
                        <div className="w-full flex gap-2">
                          <input 
@@ -941,8 +1078,7 @@ export default function App() {
                         <span className="text-[10px] font-black">ROGUE</span>
                       </div>
                    </div>
-               </div>
-            </motion.div>
+             </motion.div>
           )}
         </AnimatePresence>
 

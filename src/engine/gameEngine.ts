@@ -66,9 +66,9 @@ export const spawnEnemy = (timeMs: number, playerPos: Vector, difficultyFactor: 
       isBomber = true;
   }
 
-  // Scaling: base_hp × (1 + time × 0.2)
-  const hpScale = (1 + timeMin * 0.20) * difficultyFactor;
-  const dmgScale = (1 + timeMin * 0.15) * (1 + (difficultyFactor - 1) * 0.5);
+  // Scaling: base_hp × (1 + time × 0.15) - Reduced from 0.20 for lower difficulty
+  const hpScale = (1 + timeMin * 0.15) * difficultyFactor;
+  const dmgScale = (1 + timeMin * 0.12) * (1 + (difficultyFactor - 1) * 0.5); // Reduced from 0.15
 
   return {
     id: Math.random().toString(36).substr(2, 9),
@@ -197,10 +197,26 @@ export const updateEnemies = (state: GameState, onShake: (amt: number) => void) 
     const targetDir = { x: Math.cos(targetAngle), y: Math.sin(targetAngle) };
     enemy.currentDir.x += (targetDir.x - enemy.currentDir.x) * turnSpeed;
     enemy.currentDir.y += (targetDir.y - enemy.currentDir.y) * turnSpeed;
-    
+
+    // Movement with Separation
     const mag = Math.sqrt(enemy.currentDir.x ** 2 + enemy.currentDir.y ** 2);
-    enemy.pos.x += (enemy.currentDir.x / mag) * enemy.speed;
-    enemy.pos.y += (enemy.currentDir.y / mag) * enemy.speed;
+    let moveX = (enemy.currentDir.x / mag) * enemy.speed;
+    let moveY = (enemy.currentDir.y / mag) * enemy.speed;
+
+    // Enemy-Enemy Separation (Simple)
+    enemies.forEach(other => {
+        if (enemy === other) return;
+        const d = getDistance(enemy.pos, other.pos);
+        if (d < enemy.radius + other.radius) {
+            const angle = getAngle(other.pos, enemy.pos);
+            const force = 0.5;
+            moveX += Math.cos(angle) * force;
+            moveY += Math.sin(angle) * force;
+        }
+    });
+
+    enemy.pos.x += moveX;
+    enemy.pos.y += moveY;
 
     // Collision with player
     const dist = getDistance(enemy.pos, player.pos);
@@ -210,12 +226,17 @@ export const updateEnemies = (state: GameState, onShake: (amt: number) => void) 
         player.invincibleUntil = gameTime + 1000;
         onShake(15);
         if (navigator.vibrate) navigator.vibrate(20);
+      } else {
+        // Pushing player slightly or sliding away
+        const pushAngle = getAngle(player.pos, enemy.pos);
+        enemy.pos.x += Math.cos(pushAngle) * 2;
+        enemy.pos.y += Math.sin(pushAngle) * 2;
       }
     }
   });
 };
 
-export const autoFire = (state: GameState) => {
+export const autoFire = (state: GameState, onShoot?: () => void) => {
   const { player, enemies, weapons, projectiles, gameTime } = state;
   if (enemies.length === 0) return;
 
@@ -238,6 +259,7 @@ export const autoFire = (state: GameState) => {
 
       if (nearest) {
         weapon.lastFired = gameTime;
+        onShoot?.();
         const target = nearest as Enemy;
         const baseAngle = getAngle(player.pos, target.pos);
         
