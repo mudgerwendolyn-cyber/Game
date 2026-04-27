@@ -25,10 +25,11 @@ export const createPlayer = (): Player => ({
   ...INITIAL_PLAYER_STATS,
   id: 'player',
   pos: { x: GAME_WIDTH / 2, y: GAME_HEIGHT / 2 },
-  invincibleUntil: 0
+  invincibleUntil: 0,
+  vel: { x: 0, y: 0 }
 });
 
-export const spawnEnemy = (timeMs: number, playerPos: Vector): Enemy => {
+export const spawnEnemy = (timeMs: number, playerPos: Vector, difficultyFactor: number = 1): Enemy => {
   const side = Math.floor(Math.random() * 4);
   let pos = { x: 0, y: 0 };
   const offset = 50;
@@ -41,25 +42,33 @@ export const spawnEnemy = (timeMs: number, playerPos: Vector): Enemy => {
   const timeMin = timeMs / 60000;
   
   // Weights change over time
-  const eliteChance = Math.min(0.2, 0.02 + timeMin * 0.05);
-  const fastChance = Math.min(0.4, 0.1 + timeMin * 0.03);
+  const eliteChance = Math.min(0.2, (0.02 + timeMin * 0.05) * difficultyFactor);
+  const tankChance = Math.min(0.3, (0.05 + timeMin * 0.04) * difficultyFactor);
+  const fastChance = Math.min(0.35, (0.1 + timeMin * 0.03) * difficultyFactor);
+  const bomberChance = Math.min(0.2, (0.03 + timeMin * 0.06) * difficultyFactor);
 
   let template = ENEMY_TEMPLATES.BASIC;
   let isElite = false;
   let isFast = false;
+  let isBomber = false;
 
   const roll = Math.random();
   if (roll < eliteChance || (timeMs > 0 && Math.floor(timeMs / 30000) > Math.floor((timeMs - 16) / 30000))) {
       template = ENEMY_TEMPLATES.ELITE;
       isElite = true;
-  } else if (roll < eliteChance + fastChance) {
+  } else if (roll < eliteChance + tankChance) {
+      template = ENEMY_TEMPLATES.TANK;
+  } else if (roll < eliteChance + tankChance + fastChance) {
       template = ENEMY_TEMPLATES.FAST;
       isFast = true;
+  } else if (roll < eliteChance + tankChance + fastChance + bomberChance) {
+      template = ENEMY_TEMPLATES.BOMBER;
+      isBomber = true;
   }
 
-  // Scaling
-  const hpScale = 1 + timeMin * 0.15;
-  const dmgScale = 1 + timeMin * 0.1;
+  // Scaling: base_hp × (1 + time × 0.2)
+  const hpScale = (1 + timeMin * 0.20) * difficultyFactor;
+  const dmgScale = (1 + timeMin * 0.15) * (1 + (difficultyFactor - 1) * 0.5);
 
   return {
     id: Math.random().toString(36).substr(2, 9),
@@ -71,7 +80,11 @@ export const spawnEnemy = (timeMs: number, playerPos: Vector): Enemy => {
     damage: Math.floor(template.damage * dmgScale),
     isElite,
     isFast,
-    color: template.color
+    isBomber,
+    color: template.color,
+    xpValue: template.xp,
+    hitFlashUntil: 0,
+    currentDir: { x: 0, y: 0 }
   };
 };
 
@@ -84,48 +97,119 @@ export const getAngle = (v1: Vector, v2: Vector) => {
 };
 
 export const updatePlayer = (player: Player, keys: Set<string>, joystickVector?: Vector) => {
-  const move = { x: 0, y: 0 };
+  const targetMove = { x: 0, y: 0 };
 
   if (joystickVector && (joystickVector.x !== 0 || joystickVector.y !== 0)) {
-    move.x = joystickVector.x;
-    move.y = joystickVector.y;
+    targetMove.x = joystickVector.x;
+    targetMove.y = joystickVector.y;
   } else {
-    if (keys.has('w') || keys.has('ArrowUp')) move.y -= 1;
-    if (keys.has('s') || keys.has('ArrowDown')) move.y += 1;
-    if (keys.has('a') || keys.has('ArrowLeft')) move.x -= 1;
-    if (keys.has('d') || keys.has('ArrowRight')) move.x += 1;
+    if (keys.has('w') || keys.has('ArrowUp')) targetMove.y -= 1;
+    if (keys.has('s') || keys.has('ArrowDown')) targetMove.y += 1;
+    if (keys.has('a') || keys.has('ArrowLeft')) targetMove.x -= 1;
+    if (keys.has('d') || keys.has('ArrowRight')) targetMove.x += 1;
   }
 
-  if (move.x !== 0 || move.y !== 0) {
-    if (!joystickVector || (joystickVector.x === 0 && joystickVector.y === 0)) {
-      const length = Math.sqrt(move.x * move.x + move.y * move.y);
-      player.pos.x += (move.x / length) * player.speed;
-      player.pos.y += (move.y / length) * player.speed;
-    } else {
-      player.pos.x += move.x * player.speed;
-      player.pos.y += move.y * player.speed;
+  // Normalize target move
+  let tx = 0;
+  let ty = 0;
+  if (targetMove.x !== 0 || targetMove.y !== 0) {
+    const length = Math.sqrt(targetMove.x * targetMove.x + targetMove.y * targetMove.y);
+    tx = (targetMove.x / length) * player.speed;
+    ty = (targetMove.y / length) * player.speed;
+    if (joystickVector && (joystickVector.x !== 0 || joystickVector.y !== 0)) {
+        tx = targetMove.x * player.speed;
+        ty = targetMove.y * player.speed;
     }
   }
+
+  // Smooth Inertia
+  const lerp = 0.15;
+  player.vel.x += (tx - player.vel.x) * lerp;
+  player.vel.y += (ty - player.vel.y) * lerp;
+
+  player.pos.x += player.vel.x;
+  player.pos.y += player.vel.y;
 
   // Bounds
   player.pos.x = Math.max(player.radius, Math.min(GAME_WIDTH - player.radius, player.pos.x));
   player.pos.y = Math.max(player.radius, Math.min(GAME_HEIGHT - player.radius, player.pos.y));
 };
 
-export const updateEnemies = (state: GameState) => {
+export const spawnParticle = (state: GameState, pos: Vector, color: string, count = 5) => {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 2;
+    state.particles.push({
+      id: Math.random().toString(36).substr(2, 9),
+      pos: { ...pos },
+      vel: { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed },
+      color,
+      life: 0,
+      maxLife: 20 + Math.random() * 15,
+      size: 1 + Math.random() * 2
+    });
+  }
+};
+
+export const spawnDamageNumber = (state: GameState, pos: Vector, value: number, isCrit = false) => {
+  state.damageNumbers.push({
+    id: Math.random(),
+    pos: { x: pos.x, y: pos.y - 10 },
+    value: Math.floor(value),
+    isCrit,
+    life: 1.0
+  });
+};
+
+export const updateJuice = (state: GameState) => {
+  // Particles
+  for (let i = state.particles.length - 1; i >= 0; i--) {
+    const p = state.particles[i];
+    p.life++;
+    p.pos.x += p.vel.x;
+    p.pos.y += p.vel.y;
+    p.vel.x *= 0.96;
+    p.vel.y *= 0.96;
+    if (p.life >= p.maxLife) state.particles.splice(i, 1);
+  }
+
+  // Damage Numbers
+  for (let i = state.damageNumbers.length - 1; i >= 0; i--) {
+    const d = state.damageNumbers[i];
+    d.life -= 0.02;
+    d.pos.y -= 0.5;
+    if (d.life <= 0) state.damageNumbers.splice(i, 1);
+  }
+};
+
+export const updateEnemies = (state: GameState, onShake: (amt: number) => void) => {
   const { player, enemies, gameTime } = state;
   
   enemies.forEach(enemy => {
-    const angle = getAngle(enemy.pos, player.pos);
-    enemy.pos.x += Math.cos(angle) * enemy.speed;
-    enemy.pos.y += Math.sin(angle) * enemy.speed;
+    const targetAngle = getAngle(enemy.pos, player.pos);
+    
+    // Smooth Steering
+    if (!enemy.currentDir) {
+        enemy.currentDir = { x: Math.cos(targetAngle), y: Math.sin(targetAngle) };
+    }
+    
+    const turnSpeed = 0.08;
+    const targetDir = { x: Math.cos(targetAngle), y: Math.sin(targetAngle) };
+    enemy.currentDir.x += (targetDir.x - enemy.currentDir.x) * turnSpeed;
+    enemy.currentDir.y += (targetDir.y - enemy.currentDir.y) * turnSpeed;
+    
+    const mag = Math.sqrt(enemy.currentDir.x ** 2 + enemy.currentDir.y ** 2);
+    enemy.pos.x += (enemy.currentDir.x / mag) * enemy.speed;
+    enemy.pos.y += (enemy.currentDir.y / mag) * enemy.speed;
 
     // Collision with player
     const dist = getDistance(enemy.pos, player.pos);
     if (dist < enemy.radius + player.radius) {
       if (gameTime > player.invincibleUntil) {
         player.hp -= enemy.damage;
-        player.invincibleUntil = gameTime + 500; // 0.5s i-frames
+        player.invincibleUntil = gameTime + 1000;
+        onShake(15);
+        if (navigator.vibrate) navigator.vibrate(20);
       }
     }
   });
@@ -136,7 +220,11 @@ export const autoFire = (state: GameState) => {
   if (enemies.length === 0) return;
 
   weapons.forEach(weapon => {
-    if (gameTime - weapon.lastFired >= weapon.cooldown / player.attackSpeed) {
+    // Add ±10% random rhythm
+    const jitter = (Math.random() * 0.2 - 0.1); 
+    const finalCooldown = (weapon.cooldown / player.attackSpeed) * (1 + jitter);
+
+    if (gameTime - weapon.lastFired >= finalCooldown) {
       let nearest: Enemy | null = null;
       let minDist = weapon.range;
 

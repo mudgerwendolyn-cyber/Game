@@ -44,7 +44,10 @@ import {
   updatePlayer, 
   updateEnemies, 
   autoFire, 
-  getDistance 
+  getDistance,
+  spawnParticle,
+  spawnDamageNumber,
+  updateJuice
 } from './engine/gameEngine';
 import { drawGame } from './engine/rendering';
 
@@ -63,41 +66,49 @@ const INITIAL_STATE: GameState = {
   wave: 1,
   gameTime: 0,
   score: 0,
+  level: 1,
+  experience: 0, // Fallback fields if needed by templates
+  experienceToNextLevel: 100, // Fallback fields if needed by templates
   nextUpgrades: [],
-  damageNumbers: []
+  damageNumbers: [],
+  particles: []
 };
 
 // Available Upgrades Pool
 const UPGRADES: Upgrade[] = [
-  // A类：直接强化
-  { id: 'hp', name: '体格强化', description: '最大生命值 +25%', type: 'STAT', apply: (p) => { 
-    p.maxHp = Math.floor(p.maxHp * 1.25); 
-    p.hp = Math.floor(p.hp + (p.maxHp * 0.25));
+  // A类：直接强化 (Tightened)
+  { id: 'hp', name: '体格强化', description: '最大生命值 +20%', type: 'STAT', apply: (p) => { 
+    p.maxHp = Math.floor(p.maxHp * 1.20); 
+    p.hp = Math.floor(p.hp + (p.maxHp * 0.20));
   }},
-  { id: 'attack', name: '力量强化', description: '攻击力 +20%', type: 'STAT', apply: (p) => { p.attackPower *= 1.2; }},
-  { id: 'speed', name: '敏捷强化', description: '移动速度 +10%', type: 'STAT', apply: (p) => { p.speed *= 1.1; }},
+  { id: 'attack', name: '力量强化', description: '攻击力 +12%', type: 'STAT', apply: (p) => { p.attackPower *= 1.12; }},
+  { id: 'speed', name: '敏捷强化', description: '移动速度 +1%', type: 'STAT', apply: (p) => { p.speed *= 1.01; }},
   { id: 'aspd', name: '急速射击', description: '攻击速度 +15%', type: 'STAT', apply: (p) => { 
     p.attackSpeed = Math.min(STAT_CAPS.attackSpeed, p.attackSpeed * 1.15); 
   }},
-  { id: 'crit', name: '暴击专精', description: '暴击率 +10%', type: 'STAT', apply: (p) => { 
-    p.critRate = Math.min(STAT_CAPS.critRate, p.critRate + 0.1); 
+  { id: 'crit', name: '暴击专精', description: '暴击率 +5%', type: 'STAT', apply: (p) => { 
+    p.critRate = Math.min(STAT_CAPS.critRate, p.critRate + 0.05); 
   }},
-  { id: 'critdmg', name: '暴伤强化', description: '暴击伤害 +25%', type: 'STAT', apply: (p) => { p.critDamage += 0.25; }},
+  { id: 'critdmg', name: '暴伤强化', description: '暴击伤害 +20%', type: 'STAT', apply: (p) => { p.critDamage += 0.20; }},
   
-  // B类：机制类
-  { id: 'pierce', name: '穿透弹', description: '子弹穿透数 +1', type: 'STAT', apply: (p) => { p.pierce += 1; }},
-  { id: 'multishot', name: '多重射击', description: '额外发射 1 枚子弹', type: 'STAT', apply: (p) => { 
+  // B类：机制类 (Capped)
+  { id: 'pierce', name: '穿透弹', description: '子弹穿透数 +1 (上限2)', type: 'STAT', apply: (p) => { 
+    p.pierce = Math.min(STAT_CAPS.pierce, p.pierce + 1); 
+  }},
+  { id: 'multishot', name: '多重射击', description: '额外发射 1 枚子弹 (上限6)', type: 'STAT', apply: (p) => { 
     p.multiShot = Math.min(STAT_CAPS.multiShot, p.multiShot + 1); 
   }},
-  { id: 'lifesteal', name: '嗜血转换', description: '吸血 +5%', type: 'STAT', apply: (p) => { p.lifesteal += 0.05; }},
-  { id: 'knockback', name: '击退增强', description: '击退力度 +30%', type: 'STAT', apply: (p) => { p.knockback += 0.3; }},
+  { id: 'lifesteal', name: '嗜血转换', description: '吸血 +1% (上限5%)', type: 'STAT', apply: (p) => { 
+    p.lifesteal = Math.min(STAT_CAPS.lifesteal, p.lifesteal + 0.01); 
+  }},
+  { id: 'knockback', name: '击退增强', description: '击退力度 +20%', type: 'STAT', apply: (p) => { p.knockback += 0.2; }},
 
-  // C类：爆发类 (Mocking with weapon upgrades for now as specified in Prompt)
+  // C类：武技类
   { id: 'shotgun', name: '霰弹枪', description: '获得/升级 扇形射击', type: 'WEAPON', apply: (p, ws) => {
     const existing = ws.find(w => w.name === '霰弹枪');
     if (existing) {
-        existing.damage *= 1.4;
-        existing.cooldown *= 0.85;
+        existing.damage *= 1.25;
+        existing.cooldown *= 0.9;
     } else {
         ws.push({ id: 'w_' + Date.now(), ...WEAPON_TYPES.SHOTGUN, lastFired: 0 });
     }
@@ -105,19 +116,12 @@ const UPGRADES: Upgrade[] = [
   { id: 'smg', name: '冲锋枪', description: '获得/升级 高频射击', type: 'WEAPON', apply: (p, ws) => {
     const existing = ws.find(w => w.name === '冲锋枪');
     if (existing) {
-        existing.damage *= 1.4;
-        existing.cooldown *= 0.85;
+        existing.damage *= 1.25;
+        existing.cooldown *= 0.9;
     } else {
         ws.push({ id: 'w_' + Date.now(), ...WEAPON_TYPES.SMG, lastFired: 0 });
     }
   }},
-
-  // D类: 成长类 (Example: HP growth)
-  { id: 'growth_hp', name: '顽强意志', description: '每次击杀有 2% 概率回满血', type: 'STAT', apply: (p) => { 
-    // This is a special passive that would need logic in the loop, let's keep it simple for stat growth
-    p.maxHp += 50;
-    p.hp += 50;
-  }}
 ];
 
 export default function App() {
@@ -135,6 +139,113 @@ export default function App() {
   const [isMultiplayer, setIsMultiplayer] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const [roomUsers, setRoomUsers] = useState<number>(1);
+  const [roomId, setRoomId] = useState<string | null>(null);
+  const [isHost, setIsHost] = useState(false);
+  const [errorStatus, setErrorStatus] = useState<string | null>(null);
+  const [joinId, setJoinId] = useState('');
+
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomFromUrl = urlParams.get('room');
+    if (roomFromUrl) {
+      joinExistingRoom(roomFromUrl);
+    }
+  }, []);
+
+  const createRoom = () => {
+    setIsMultiplayer(true);
+    setIsHost(true);
+    gameStateRef.current.status = GameStatus.LOBBY;
+    setGameState({ ...gameStateRef.current });
+
+    if (!socketRef.current) {
+      socketRef.current = io();
+      setupSocketListeners();
+      socketRef.current.on('connect', () => {
+        socketRef.current?.emit('create_room');
+      });
+    } else {
+      socketRef.current.emit('create_room');
+    }
+  };
+
+  const joinExistingRoom = (id: string) => {
+    setIsMultiplayer(true);
+    setIsHost(false);
+    setRoomId(id);
+    gameStateRef.current.status = GameStatus.LOBBY;
+    setGameState({ ...gameStateRef.current });
+
+    if (!socketRef.current) {
+      socketRef.current = io();
+      setupSocketListeners();
+      socketRef.current.on('connect', () => {
+        socketRef.current?.emit('join_room', id);
+      });
+    } else {
+      socketRef.current.emit('join_room', id);
+    }
+  };
+
+  const setupSocketListeners = () => {
+    const s = socketRef.current;
+    if (!s) return;
+
+    s.on('room_created', (id) => {
+      setRoomId(id);
+      window.history.replaceState({}, '', `?room=${id}`);
+    });
+
+    s.on('room_update', ({ members, roomId, host }) => {
+      setRoomUsers(members.length);
+      setIsHost(s.id === host);
+    });
+
+    s.on('room_error', (msg) => {
+      setErrorStatus(msg);
+      setTimeout(() => setErrorStatus(null), 3000);
+    });
+
+    s.on('game_started', () => {
+      const player = gameStateRef.current.player;
+      gameStateRef.current.status = GameStatus.PLAYING;
+      setGameState({ ...gameStateRef.current });
+      lastTimeRef.current = 0;
+      
+      gameStateRef.current.player.id = s.id || 'player';
+      s.emit('join', { 
+        pos: player.pos, 
+        hp: player.hp, 
+        level: player.level,
+        radius: player.radius
+      });
+    });
+
+    s.on('players_update', (players) => {
+      gameStateRef.current.players = players;
+    });
+
+    s.on('player_moved', ({ id, pos }) => {
+      if (gameStateRef.current.players[id]) {
+        gameStateRef.current.players[id].pos = pos;
+      }
+    });
+
+    s.on('player_state_update', ({ id, state }) => {
+      if (gameStateRef.current.players[id]) {
+        gameStateRef.current.players[id] = { ...gameStateRef.current.players[id], ...state };
+      }
+    });
+  };
+
+  const handleStartMultiplayerGame = () => {
+    if (roomUsers < 2) {
+      setErrorStatus('需要至少两名玩家');
+      setTimeout(() => setErrorStatus(null), 3000);
+      return;
+    }
+    socketRef.current?.emit('start_game', roomId);
+  };
 
   useEffect(() => {
     const checkMobile = () => {
@@ -152,16 +263,21 @@ export default function App() {
     }
     setIsMultiplayer(false);
     setRoomUsers(1);
+    setRoomId(null);
+    setIsHost(false);
+    window.history.replaceState({}, '', window.location.pathname);
     const player = createPlayer();
-    gameStateRef.current = { ...INITIAL_STATE, player };
-    setGameState(gameStateRef.current);
+    const newState = { ...INITIAL_STATE, player, status: GameStatus.MENU };
+    gameStateRef.current = newState;
+    setGameState({ ...newState });
     lastTimeRef.current = 0;
   };
 
   const [copied, setCopied] = useState(false);
 
   const handleShare = () => {
-    navigator.clipboard.writeText(window.location.href);
+    const shareUrl = roomId ? `${window.location.origin}${window.location.pathname}?room=${roomId}` : window.location.href;
+    navigator.clipboard.writeText(shareUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -175,45 +291,7 @@ export default function App() {
   };
 
   const startMultiplayer = () => {
-    setIsMultiplayer(true);
-    const player = createPlayer();
-    gameStateRef.current = { ...INITIAL_STATE, player, status: GameStatus.PLAYING };
-    setGameState(gameStateRef.current);
-    lastTimeRef.current = 0;
-
-    // Connect to socket
-    if (!socketRef.current) {
-      socketRef.current = io();
-      socketRef.current.on('connect', () => {
-        if (socketRef.current) {
-          gameStateRef.current.player.id = socketRef.current.id || 'player';
-          socketRef.current.emit('join', { 
-            pos: player.pos, 
-            hp: player.hp, 
-            level: player.level,
-            radius: player.radius // Add radius to keep rendering consistent
-          });
-        }
-      });
-      socketRef.current.on('players_update', (players) => {
-        setRoomUsers(Object.keys(players).length);
-        gameStateRef.current.players = players;
-      });
-      socketRef.current.on('player_moved', ({ id, pos }) => {
-        if (gameStateRef.current.players[id]) {
-          gameStateRef.current.players[id].pos = pos;
-        }
-      });
-      socketRef.current.on('player_state_update', ({ id, state }) => {
-        if (gameStateRef.current.players[id]) {
-          gameStateRef.current.players[id] = { ...gameStateRef.current.players[id], ...state };
-        }
-      });
-      socketRef.current.on('enemies_update', (enemies) => {
-         // Only follow remote enemies if we are not the host
-         // For simplicity, skip host check and just overwrite if we want global sync
-      });
-    }
+    createRoom();
   };
 
   const togglePause = () => {
@@ -263,12 +341,13 @@ export default function App() {
       // 2. Enemy Spawning
       // host handles spawning in multiplayer
       const isHost = !isMultiplayer || Object.keys(state.players)[0] === socketRef.current?.id;
+      const difficultyFactor = isMultiplayer ? (1 + (roomUsers - 1) * 0.4) : 1;
 
       if (isHost) {
         const baseRate = 1000;
-        const spawnRate = Math.max(100, baseRate / (1 + (state.gameTime / 60000) * 0.5));
+        const spawnRate = Math.max(80, (baseRate / (1 + (state.gameTime / 60000) * 0.5)) / difficultyFactor);
         if (Math.random() < (deltaTime / spawnRate)) {
-          state.enemies.push(spawnEnemy(state.gameTime, player.pos));
+          state.enemies.push(spawnEnemy(state.gameTime, player.pos, difficultyFactor));
         }
       }
 
@@ -276,12 +355,7 @@ export default function App() {
       state.wave = Math.floor(state.gameTime / 30000) + 1;
 
       // 3. Enemy Update
-      const oldHp = player.hp;
-      updateEnemies(state);
-      if (player.hp < oldHp) {
-          setShake(10);
-          if (isMultiplayer) socketRef.current?.emit('player_state', { hp: player.hp });
-      }
+      updateEnemies(state, setShake);
 
       // 4. Combat / AutoFire
       autoFire(state);
@@ -300,36 +374,47 @@ export default function App() {
             const isCrit = Math.random() < player.critRate;
             let dmg = p.damage * (isCrit ? player.critDamage : 1);
             e.hp -= dmg;
+            e.hitFlashUntil = state.gameTime + 80;
             
             // Knockback
             const angle = Math.atan2(e.pos.y - p.pos.y, e.pos.x - p.pos.x);
-            const kbForce = 5 * (1 + player.knockback);
+            const kbForce = 4 * (1 + player.knockback);
             e.pos.x += Math.cos(angle) * kbForce;
             e.pos.y += Math.sin(angle) * kbForce;
 
-            // Damage Number
-            state.damageNumbers.push({
-                id: Math.random(),
-                pos: { x: e.pos.x, y: e.pos.y - 20 },
-                value: Math.floor(dmg),
-                isCrit,
-                life: 1.0
-            });
+            // Feedback
+            spawnParticle(state, e.pos, '#fff', 2);
+            spawnDamageNumber(state, e.pos, dmg, isCrit);
 
             // Lifesteal
             if (player.lifesteal > 0) {
                 player.hp = Math.min(player.maxHp, player.hp + dmg * player.lifesteal);
             }
 
-            if (e.hp <= 0) {
-              state.score += e.isElite ? 500 : 100;
-              player.killCount += 1;
-              state.xpGems.push({ 
-                  id: Math.random().toString(), 
-                  pos: { ...e.pos }, 
-                  radius: e.isElite ? 8 : 4, 
-                  value: e.isElite ? 30 : 10 
-              });
+              if (e.hp <= 0) {
+                state.score += e.isElite ? 500 : 100;
+                player.killCount += 1;
+                
+                // Bomber explosion
+                if (e.isBomber) {
+                    const distToPlayer = getDistance(e.pos, player.pos);
+                    const explosionRadius = 60;
+                    if (distToPlayer < explosionRadius + player.radius) {
+                        player.hp -= e.damage;
+                        setShake(15);
+                    }
+                    spawnParticle(state, e.pos, '#facc15', 20); // Yellow/Orange for explosion
+                }
+
+                state.xpGems.push({ 
+                    id: Math.random().toString(), 
+                    pos: { ...e.pos }, 
+                    radius: e.isElite ? 8 : 4, 
+                    value: e.xpValue || 1 
+                });
+              spawnParticle(state, e.pos, e.color, 12);
+              setShake(e.isElite ? 10 : 4);
+              if (navigator.vibrate) navigator.vibrate(10);
               enemies.splice(j, 1);
             }
 
@@ -348,7 +433,8 @@ export default function App() {
         }
       }
 
-      // 6. XP Gems
+      // 6. Juice and XP
+      updateJuice(state);
       const xpCollectionRadius = 100 * (1 + player.level * 0.05);
       for (let i = xpGems.length - 1; i >= 0; i--) {
         const gem = xpGems[i];
@@ -366,7 +452,7 @@ export default function App() {
             if (player.xp >= player.maxXp) {
                 player.xp -= player.maxXp;
                 player.level += 1;
-                player.maxXp = Math.floor(player.maxXp * 1.15) + 30;
+                player.maxXp = Math.floor(10 * Math.pow(1.5, player.level));
                 state.status = GameStatus.UPGRADING;
                 state.nextUpgrades = pickUpgrades();
             }
@@ -479,6 +565,21 @@ export default function App() {
               const touch = e.touches[0];
               const rect = e.currentTarget.getBoundingClientRect();
               const pos = { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+              
+              // Dynamic follow logic
+              const dx = pos.x - joystickCenter.x;
+              const dy = pos.y - joystickCenter.y;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              const limit = 50;
+              
+              if (dist > limit) {
+                const angle = Math.atan2(dy, dx);
+                setJoystickCenter({
+                  x: pos.x - Math.cos(angle) * limit,
+                  y: pos.y - Math.sin(angle) * limit
+                });
+              }
+              
               handleJoystick(pos, joystickCenter);
             }}
             onTouchEnd={() => {
@@ -569,6 +670,107 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* Lobby Screen */}
+        <AnimatePresence>
+          {gameState.status === GameStatus.LOBBY && (
+            <motion.div 
+               initial={{ opacity: 0 }}
+               animate={{ opacity: 1 }}
+               exit={{ opacity: 0 }}
+               className="absolute inset-0 z-[60] bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center p-8 text-center"
+            >
+               <motion.div
+                 initial={{ scale: 0.8, opacity: 0 }}
+                 animate={{ scale: 1, opacity: 1 }}
+                 className="bg-slate-900 border border-white/5 p-10 rounded-[3rem] shadow-2xl w-full max-w-[350px]"
+               >
+                 <div className="mb-6 text-center">
+                   <span className="text-[10px] font-black text-blue-500 uppercase tracking-[0.3em]">Game Lobby</span>
+                   <h2 className="text-4xl font-black text-white italic uppercase tracking-tighter">多人联机</h2>
+                 </div>
+
+                 {roomId ? (
+                   <div className="mb-8">
+                     <div className="bg-slate-950/50 p-4 rounded-2xl mb-4 border border-white/5">
+                       <span className="text-[10px] font-bold text-slate-500 block mb-1">房间代码</span>
+                       <span className="text-3xl font-black text-blue-400 tracking-widest">{roomId}</span>
+                     </div>
+                     <p className="text-xs text-slate-400 font-medium mb-6">
+                       当前玩家: <span className="text-white font-black">{roomUsers} / 4</span>
+                     </p>
+
+                     {roomUsers > 1 && (
+                       <div className="mb-4 py-2 px-4 bg-orange-500/10 border border-orange-500/30 rounded-xl text-left">
+                         <span className="text-[10px] font-black text-orange-400 uppercase tracking-widest">多人难度加成</span>
+                         <div className="text-sm font-black text-orange-500">
+                           挑战难度: +{Math.round((roomUsers - 1) * 40)}%
+                         </div>
+                       </div>
+                     )}
+                     
+                     <div className="flex flex-col gap-3">
+                       {isHost && (
+                         <motion.button 
+                           whileTap={{ scale: 0.95 }}
+                           onClick={handleStartMultiplayerGame}
+                           disabled={roomUsers < 2}
+                           className={`w-full py-5 rounded-[2rem] font-black text-xl flex items-center justify-center gap-3 transition-all active:scale-95 border-b-4 ${
+                             roomUsers >= 2 
+                               ? 'bg-emerald-600 text-white shadow-[0_10px_30px_-5px_rgba(16,185,129,0.4)] border-emerald-800' 
+                               : 'bg-slate-800 text-slate-500 border-slate-950 opacity-50 cursor-not-allowed'
+                           }`}
+                         >
+                           <Play size={24} fill="currentColor" /> 开始游戏
+                         </motion.button>
+                       )}
+                       
+                       {!isHost && (
+                         <div className="py-5 bg-slate-800/50 text-slate-400 font-black rounded-2xl border border-white/5 animate-pulse">
+                           等待房主开始...
+                         </div>
+                       )}
+
+                       <motion.button 
+                         whileTap={{ scale: 0.95 }}
+                         onClick={handleShare}
+                         className="w-full py-4 bg-slate-800 text-white font-black rounded-[2rem] transition-all active:scale-95 flex items-center justify-center gap-2 border-b-4 border-slate-950"
+                       >
+                         {copied ? <Check size={18} className="text-emerald-500" /> : <Share2 size={18} />}
+                         {copied ? '已复制邀请链接' : '分享邀请链接'}
+                       </motion.button>
+
+                       <motion.button 
+                         whileTap={{ scale: 0.95 }}
+                         onClick={resetGame}
+                         className="mt-2 text-rose-500 font-black text-xs uppercase tracking-widest hover:text-rose-400 transition-colors"
+                       >
+                         退出房间
+                       </motion.button>
+                     </div>
+                   </div>
+                 ) : (
+                   <div className="flex flex-col items-center gap-4">
+                     <RotateCcw className="text-blue-500 animate-spin" size={32} />
+                     <p className="text-slate-400 font-bold">正在创建/加入房间...</p>
+                   </div>
+                 )}
+
+                 {errorStatus && (
+                    <motion.div 
+                      initial={{ y: 20, opacity: 0 }}
+                      animate={{ y: 0, opacity: 1 }}
+                      className="absolute bottom-10 left-1/2 -translate-x-1/2 w-full px-8"
+                    >
+                      <div className="bg-rose-500/10 border border-rose-500/50 text-rose-500 p-3 rounded-2xl text-xs font-black">
+                        {errorStatus}
+                      </div>
+                    </motion.div>
+                 )}
+               </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Upgrade Screen - Portrait Height Optimized */}
         <AnimatePresence>
@@ -696,8 +898,26 @@ export default function App() {
                          onClick={startMultiplayer}
                          className="w-full py-4 bg-slate-800 hover:bg-slate-700 text-white font-black text-xl rounded-[2.5rem] shadow-xl transition-all active:scale-95 flex items-center justify-center gap-3 border-b-4 border-slate-950"
                        >
-                         <Target size={24} className="text-emerald-400" /> 多 人 联 机
+                         <Target size={24} /> 创建多人房间
                        </button>
+
+                       <div className="w-full flex gap-2">
+                         <input 
+                           type="text"
+                           placeholder="输入房号加入"
+                           value={joinId}
+                           onChange={(e) => setJoinId(e.target.value.toUpperCase())}
+                           className="flex-1 bg-slate-800 border border-slate-700 rounded-2xl px-4 py-3 text-white font-bold focus:outline-none focus:border-blue-500 text-center uppercase"
+                         />
+                         <button 
+                           onClick={() => {
+                             if (joinId.length > 0) joinExistingRoom(joinId);
+                           }}
+                           className="bg-blue-600 hover:bg-blue-500 text-white px-6 rounded-2xl font-black transition-colors"
+                         >
+                           加入
+                         </button>
+                       </div>
 
                        <button 
                          onClick={handleShare}

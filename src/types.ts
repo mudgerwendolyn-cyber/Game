@@ -4,6 +4,7 @@
 
 export enum GameStatus {
   MENU,
+  LOBBY,
   PLAYING,
   UPGRADING,
   PAUSED,
@@ -38,6 +39,7 @@ export interface Player extends Entity {
   knockback: number;
   invincibleUntil: number;
   killCount: number;
+  vel: Vector;
 }
 
 export interface Enemy extends Entity {
@@ -47,7 +49,11 @@ export interface Enemy extends Entity {
   damage: number;
   isElite: boolean;
   isFast: boolean;
+  isBomber: boolean;
   color: string;
+  xpValue: number;
+  hitFlashUntil: number;
+  currentDir?: Vector;
 }
 
 export interface Weapon {
@@ -92,6 +98,16 @@ export interface XPgem extends Entity {
   value: number;
 }
 
+export interface Particle {
+  id: string;
+  pos: Vector;
+  vel: Vector;
+  color: string;
+  life: number;
+  maxLife: number;
+  size: number;
+}
+
 export interface GameState {
   status: GameStatus;
   player: Player;
@@ -103,6 +119,10 @@ export interface GameState {
   wave: number;
   gameTime: number;
   score: number;
+  level: number;
+  experience: number;
+  experienceToNextLevel: number;
   nextUpgrades: Upgrade[];
   damageNumbers: DamageNumber[];
+  particles: Particle[];
 }

@@ -21,50 +21,133 @@ async function startServer() {
 
   // Simple state management on server
   let players: Record<string, any> = {};
-  let enemies: any[] = [];
-  let gameTime = 0;
-  let wave = 1;
+  let rooms: Record<string, { members: string[], host: string, started: boolean }> = {};
 
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
 
+    socket.on("create_room", () => {
+      const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+      rooms[roomId] = { members: [socket.id], host: socket.id, started: false };
+      socket.join(roomId);
+      socket.emit("room_created", roomId);
+      
+      io.to(roomId).emit("room_update", { 
+        members: rooms[roomId].members, 
+        memberStates: [{ id: socket.id }],
+        host: rooms[roomId].host,
+        roomId 
+      });
+    });
+
+    socket.on("join_room", (roomId) => {
+      if (rooms[roomId]) {
+        if (rooms[roomId].started) {
+          socket.emit("room_error", "游戏已开始");
+          return;
+        }
+        if (rooms[roomId].members.length >= 4) {
+          socket.emit("room_error", "房间已满 (最多4位玩家)");
+          return;
+        }
+        if (!rooms[roomId].members.includes(socket.id)) {
+          rooms[roomId].members.push(socket.id);
+          socket.join(roomId);
+        }
+        
+        const memberStates = rooms[roomId].members.map(id => players[id] || { id });
+
+        io.to(roomId).emit("room_update", { 
+          members: rooms[roomId].members, 
+          memberStates,
+          host: rooms[roomId].host,
+          roomId 
+        });
+      } else {
+        socket.emit("room_error", "房间未找到");
+      }
+    });
+
+    socket.on("start_game", (roomId) => {
+      if (rooms[roomId] && rooms[roomId].host === socket.id) {
+        if (rooms[roomId].members.length < 2) {
+          socket.emit("room_error", "至少需要两名玩家才能开始多人模式");
+          return;
+        }
+        rooms[roomId].started = true;
+        io.to(roomId).emit("game_started");
+      }
+    });
+
     socket.on("join", (playerData) => {
       players[socket.id] = { ...playerData, id: socket.id };
-      io.emit("players_update", players);
+      // Check which room the player is in and notify that room
+      for (const roomId in rooms) {
+        if (rooms[roomId].members.includes(socket.id)) {
+          io.to(roomId).emit("players_update", rooms[roomId].members.reduce((acc, id) => {
+            if (players[id]) acc[id] = players[id];
+            return acc;
+          }, {} as any));
+        }
+      }
     });
 
     socket.on("move", (pos) => {
       if (players[socket.id]) {
         players[socket.id].pos = pos;
-        socket.broadcast.emit("player_moved", { id: socket.id, pos });
+        // Broadcast to relevant room
+        for (const roomId in rooms) {
+          if (rooms[roomId].members.includes(socket.id)) {
+            socket.to(roomId).emit("player_moved", { id: socket.id, pos });
+            break;
+          }
+        }
       }
     });
 
     socket.on("player_state", (playerState) => {
-       if (players[socket.id]) {
-         players[socket.id] = { ...players[socket.id], ...playerState };
-         socket.broadcast.emit("player_state_update", { id: socket.id, state: playerState });
-       }
+      if (players[socket.id]) {
+        players[socket.id] = { ...players[socket.id], ...playerState };
+        for (const roomId in rooms) {
+          if (rooms[roomId].members.includes(socket.id)) {
+            socket.to(roomId).emit("player_state_update", { id: socket.id, state: playerState });
+            break;
+          }
+        }
+      }
     });
 
     socket.on("fire", (projectile) => {
-      socket.broadcast.emit("projectile_spawned", { ...projectile, ownerId: socket.id });
+      for (const roomId in rooms) {
+        if (rooms[roomId].members.includes(socket.id)) {
+          socket.to(roomId).emit("projectile_spawned", { ...projectile, ownerId: socket.id });
+          break;
+        }
+      }
     });
 
     socket.on("disconnect", () => {
       console.log("User disconnected:", socket.id);
       delete players[socket.id];
-      io.emit("players_update", players);
-    });
-    
-    // For syncing enemies in multiplayer
-    socket.on("sync_enemies", (newEnemies) => {
-       // Simple approach: the first player acts as the "host" for enemies
-       // In a real production app, the server would run the physics
-       if (Object.keys(players)[0] === socket.id) {
-         enemies = newEnemies;
-         socket.broadcast.emit("enemies_update", enemies);
-       }
+      
+      for (const roomId in rooms) {
+        if (rooms[roomId].members.includes(socket.id)) {
+          rooms[roomId].members = rooms[roomId].members.filter(id => id !== socket.id);
+          
+          if (rooms[roomId].members.length === 0) {
+            delete rooms[roomId];
+          } else {
+            if (rooms[roomId].host === socket.id) {
+              rooms[roomId].host = rooms[roomId].members[0];
+            }
+            io.to(roomId).emit("room_update", { 
+              members: rooms[roomId].members, 
+              host: rooms[roomId].host,
+              roomId 
+            });
+          }
+        }
+      }
     });
   });
 
