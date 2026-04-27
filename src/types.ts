@@ -1,95 +1,106 @@
 /**
- * @license
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export enum SkillType {
-  SINGLE_DAMAGE = 'SINGLE_DAMAGE',
-  AOE_DAMAGE = 'AOE_DAMAGE',
-  CRIT = 'CRIT',
-  HEAL = 'HEAL',
+export enum GameStatus {
+  MENU,
+  PLAYING,
+  UPGRADING,
+  GAME_OVER
 }
 
-export interface Skill {
-  name: string;
-  type: SkillType;
-  description: string;
-  value: number; // Percentage or flat value depending on type
+export interface Vector {
+  x: number;
+  y: number;
 }
 
-export interface Hero {
+export interface Entity {
   id: string;
-  name: string;
-  level: number;
+  pos: Vector;
+  radius: number;
+}
+
+export interface Player extends Entity {
   hp: number;
   maxHp: number;
-  attack: number;
-  skills: Skill[];
-  rarity: 'Common' | 'Rare' | 'Epic' | 'Legendary';
-  portrait?: string;
-}
-
-export enum BossAbility {
-  ARMOR = 'ARMOR', // Reduces damage taken
-  HEAL = 'HEAL',   // Regenerates HP over time
-  ENRAGE = 'ENRAGE', // Attack increases as HP drops
-  VAMPIRISM = 'VAMPIRISM', // Heals on attack
-}
-
-export interface Monster {
-  id: string;
-  name: string;
+  speed: number;
+  xp: number;
   level: number;
+  maxXp: number;
+  attackPower: number;
+  attackSpeed: number; // multiplier
+  critRate: number;
+  critDamage: number; // default 1.5
+  lifesteal: number;
+  pierce: number;
+  multiShot: number;
+  knockback: number;
+  invincibleUntil: number;
+  killCount: number;
+}
+
+export interface Enemy extends Entity {
   hp: number;
   maxHp: number;
-  attack: number;
-  rewardGold: number;
+  speed: number;
+  damage: number;
+  isElite: boolean;
+  isFast: boolean;
+  color: string;
+}
+
+export interface Weapon {
+  id: string;
+  name: string;
+  type: 'projectile' | 'melee';
+  damage: number;
+  cooldown: number; // ms
+  lastFired: number;
+  range: number;
+  projectileSpeed?: number;
+  color: string;
+}
+
+export interface Projectile extends Entity {
+  velocity: Vector;
+  damage: number;
+  color: string;
+  distanceTraveled: number;
+  maxDistance: number;
+  ownerId: string;
+  pierceRemaining: number;
+}
+
+export interface Upgrade {
+  id: string;
+  name: string;
   description: string;
-  battleQuotes: string[];
-  isBoss?: boolean;
-  ability?: BossAbility;
+  type: 'STAT' | 'WEAPON';
+  apply: (player: Player, weapons: Weapon[]) => void;
+}
+
+export interface DamageNumber {
+  id: number;
+  pos: Vector;
+  value: number;
+  isCrit: boolean;
+  life: number; // 0 to 1
+}
+
+export interface XPgem extends Entity {
+  value: number;
 }
 
 export interface GameState {
-  gold: number;
-  highestLevel: number;
-  grid: (Hero | null)[]; // 4x4 grid = 16 slots
-  monstersDefeated: number;
-  currentMonster: Monster | null;
-  heroInCombat: Hero | null;
-  baseHp: number;
-  maxBaseHp: number;
+  status: GameStatus;
+  player: Player;
+  enemies: Enemy[];
+  projectiles: Projectile[];
+  weapons: Weapon[];
+  xpGems: XPgem[];
+  wave: number;
+  gameTime: number;
+  score: number;
+  nextUpgrades: Upgrade[];
+  damageNumbers: DamageNumber[];
 }
-
-// Formulas & Constants
-export const GAME_CONSTANTS = {
-  GRID_SIZE: 16,
-  BASE_HERO_HP: 100,
-  BASE_HERO_ATTACK: 15,
-  BASE_MONSTER_HP: 80,
-  BASE_MONSTER_ATTACK: 10,
-  BASE_COIN_REWARD: 20,
-  HERO_BUY_COST: 50,
-  UPGRADE_COST_EXPONENT: 1.5,
-  LEVEL_GROWTH_FACTOR: 0.1, // 10% per level
-};
-
-export const calculateHeroStats = (level: number) => {
-  // Multiply stats by >2 per level so merging (sacrificing 2 to get 1) is a buff, not a nerf
-  const multi = Math.pow(2.1, level - 1);
-  return {
-    hp: Math.floor(GAME_CONSTANTS.BASE_HERO_HP * multi),
-    attack: Math.floor(GAME_CONSTANTS.BASE_HERO_ATTACK * multi),
-  };
-};
-
-export const calculateMonsterStats = (stage: number) => {
-  // Smooth scaling for TD balance
-  const multi = Math.pow(1.15, stage - 1);
-  const goldMulti = Math.pow(1.3, stage - 1);
-  return {
-    hp: Math.floor(GAME_CONSTANTS.BASE_MONSTER_HP * multi),
-    attack: Math.floor((GAME_CONSTANTS.BASE_MONSTER_ATTACK + stage) * multi * 0.9),
-    gold: Math.floor(GAME_CONSTANTS.BASE_COIN_REWARD * goldMulti * (0.8 + Math.random() * 0.4)),
-  };
-};
