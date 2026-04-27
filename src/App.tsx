@@ -5,6 +5,7 @@
 
 import { useState, FC, useEffect, useRef } from 'react';
 import { motion, AnimatePresence, useAnimation } from 'motion/react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 import { useGameEngine } from './hooks/useGameEngine';
 import { Hero, Monster, GAME_CONSTANTS, BossAbility } from './types';
 import { 
@@ -570,7 +571,7 @@ export default function App() {
         )}
       </AnimatePresence>
       {renderContent()}
+      <SpeedInsights />
     </>
   );
 }
-
