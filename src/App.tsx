@@ -232,7 +232,7 @@ export default function App() {
   useEffect(() => {
     socketRef.current = io({
       transports: ['polling', 'websocket'],
-      autoConnect: true,
+      autoConnect: false,
       reconnectionAttempts: 5
     });
     setupSocketListeners();
@@ -323,7 +323,7 @@ export default function App() {
     // Re-init socket for next potential game
     socketRef.current = io({
       transports: ['polling', 'websocket'],
-      autoConnect: true,
+      autoConnect: false,
       reconnectionAttempts: 5
     });
     setupSocketListeners();
@@ -358,12 +358,14 @@ export default function App() {
     });
 
     s.on('connect_error', () => {
-      setErrorStatus('无法连接到服务器。部分地区（如中国大陆）可能需要辅助工具才能使用多人功能。');
-      setIsConnecting(false);
-      setIsMultiplayer(false);
-      gameStateRef.current.status = GameStatus.MENU;
-      setGameState({ ...gameStateRef.current });
-      setTimeout(() => setErrorStatus(null), 5000);
+      if (gameStateRef.current.status === GameStatus.LOBBY) {
+        setErrorStatus('无法连接到服务器。部分地区（如中国大陆）可能需要辅助工具才能使用多人功能。');
+        setIsConnecting(false);
+        setIsMultiplayer(false);
+        gameStateRef.current.status = GameStatus.MENU;
+        setGameState({ ...gameStateRef.current });
+        setTimeout(() => setErrorStatus(null), 5000);
+      }
     });
 
     s.on('game_started', () => {
